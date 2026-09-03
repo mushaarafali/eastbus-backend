@@ -1,20 +1,32 @@
 <!doctype html>
-<html>
+<html lang="en">
+
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <title>@yield('title', 'EastBus.lk')</title>
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
-    https://eastbus-backend-production.up.railway.app/css/eastbus.css
+    <title>
+        @yield('title', 'EastBus.lk')
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="/css/eastbus.css"
+    >
 
     @stack('head')
 </head>
 
 <body>
+
     <div class="app">
 
         <aside class="sidebar">
+
             <div class="brand">
                 EastBus.lk
 
@@ -40,6 +52,7 @@
                     <a href="{{ route('admin.fixed-schedules.index') }}">
                         🚌 Fixed Bus Schedules
                     </a>
+
                     <a href="{{ route('admin.passengers') }}">
                         👥 Passengers
                     </a>
@@ -137,13 +150,17 @@
                 @endif
 
             </nav>
+
         </aside>
 
         <main class="main">
 
             <header class="topbar">
+
                 <div>
-                    <b>@yield('header', 'Dashboard')</b>
+                    <b>
+                        @yield('header', 'Dashboard')
+                    </b>
                 </div>
 
                 <div>
@@ -166,24 +183,33 @@
                         </button>
                     </form>
                 </div>
+
             </header>
 
             <section class="content">
 
                 @if(session('success'))
+
                     <div class="flash success">
                         {{ session('success') }}
                     </div>
+
                 @endif
 
                 @if($errors->any())
+
                     <div class="flash error">
+
                         @foreach($errors->all() as $error)
+
                             <div>
                                 {{ $error }}
                             </div>
+
                         @endforeach
+
                     </div>
+
                 @endif
 
                 @yield('content')
@@ -195,5 +221,7 @@
     </div>
 
     @stack('scripts')
+
 </body>
+
 </html>
