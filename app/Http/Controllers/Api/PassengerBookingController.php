@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\EastBusMailService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -658,6 +659,13 @@ class PassengerBookingController extends Controller
             ];
         }, 3);
 
+        if (!$result->already_paid) {
+            app(EastBusMailService::class)->bookingTicket(
+                (int) $result->booking->id,
+                $result->reference
+            );
+        }
+
         return response()->json([
             'success' => true,
             'message' => $result->already_paid
@@ -905,6 +913,8 @@ class PassengerBookingController extends Controller
         }
 
         DB::table('bookings')->where('id', $id)->update($update);
+
+        app(EastBusMailService::class)->bookingCancelled($passenger, $booking);
 
         return response()->json([
             'success' => true,

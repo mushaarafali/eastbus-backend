@@ -7,6 +7,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use App\Services\EastBusMailService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 class PassengerAuthController extends Controller
@@ -214,6 +216,10 @@ class PassengerAuthController extends Controller
                     now(),
             ]);
 
+        app(EastBusMailService::class)->welcome(
+            DB::table('users')->where('id', $user->id)->first()
+        );
+
         return response()->json([
             'success' => true,
             'message' =>
@@ -357,6 +363,20 @@ class PassengerAuthController extends Controller
                 $user->password
             )
         ) {
+            if ($user) {
+                $key = 'eastbus_failed_login_' . $user->id;
+                $attempts = (int) Cache::get($key, 0) + 1;
+                Cache::put($key, $attempts, now()->addMinutes(30));
+
+                if ($attempts === 3) {
+                    app(EastBusMailService::class)->securityAlert(
+                        $user,
+                        (string) $request->ip(),
+                        (string) $request->userAgent()
+                    );
+                }
+            }
+
             return response()->json([
                 'success' => false,
                 'message' =>
@@ -386,6 +406,8 @@ class PassengerAuthController extends Controller
                     $user->email,
             ], 403);
         }
+
+        Cache::forget('eastbus_failed_login_' . $user->id);
 
         $plainToken =
             Str::random(64);
@@ -716,6 +738,10 @@ class PassengerAuthController extends Controller
             }
         );
 
+        app(EastBusMailService::class)->passwordChanged(
+            DB::table('users')->where('id', $user->id)->first()
+        );
+
         return response()->json([
             'success' => true,
             'message' =>
@@ -785,51 +811,15 @@ class PassengerAuthController extends Controller
         string $name,
         string $otp
     ): void {
-        Mail::html(
-            $this->otpEmailTemplate(
-                name: $name,
-                otp: $otp,
-                title: 'Verify Your Email',
-                message:
-                    'Use the verification code below to complete your EastBus.lk Passenger account registration.'
-            ),
-            function ($mail) use ($email) {
-                $mail
-                    ->to($email)
-                    ->subject(
-                        'EastBus.lk - Email Verification Code'
-                    );
-            }
-        );
+        app(EastBusMailService::class)->otp($email, $name, $otp, 'Email Verification');
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | PASSWORD RESET OTP EMAIL
-    |--------------------------------------------------------------------------
-    */
 
     private function sendPasswordResetOtp(
         string $email,
         string $name,
         string $otp
     ): void {
-        Mail::html(
-            $this->otpEmailTemplate(
-                name: $name,
-                otp: $otp,
-                title: 'Reset Your Password',
-                message:
-                    'Use the verification code below to reset your EastBus.lk Passenger account password.'
-            ),
-            function ($mail) use ($email) {
-                $mail
-                    ->to($email)
-                    ->subject(
-                        'EastBus.lk - Password Reset Code'
-                    );
-            }
-        );
+        app(EastBusMailService::class)->otp($email, $name, $otp, 'Password Reset');
     }
 
     /*

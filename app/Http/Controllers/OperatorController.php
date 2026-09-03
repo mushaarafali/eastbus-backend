@@ -13,6 +13,7 @@ use App\Models\Seat;
 use App\Models\Staff;
 use App\Models\Trip;
 use App\Support\Audit;
+use App\Services\EastBusMailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -374,6 +375,8 @@ class OperatorController extends Controller
                 $data['role']
             );
 
+        $plainPassword = $data['password'];
+
         $data['password'] =
             Hash::make(
                 $data['password']
@@ -392,6 +395,8 @@ class OperatorController extends Controller
             'Staff',
             $staff->login_id
         );
+
+        app(EastBusMailService::class)->staffCreated($staff, $plainPassword);
 
         return back()->with(
             'success',
