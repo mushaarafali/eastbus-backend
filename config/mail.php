@@ -1,37 +1,28 @@
 <?php
 
-return [
+namespace App\Services;
 
-    'default' => env('MAIL_MAILER', 'smtp'),
+use Resend;
 
-    'mailers' => [
+class EastBusMailService
+{
+    public static function send(
+        string $to,
+        string $subject,
+        string $html
+    ): void {
+        $resend = Resend::client(
+            env('re_LBPXzx6T_A9odz7HmexWdKMhbiJuiTCVT')
+        );
 
-        'smtp' => [
-            'transport' => 'smtp',
-            'host' => env('MAIL_HOST', 'smtp.gmail.com'),
-            'port' => env('MAIL_PORT', 587),
-            'encryption' => env('MAIL_ENCRYPTION', 'tls'),
-            'username' => env('MAIL_USERNAME'),
-            'password' => env('MAIL_PASSWORD'),
-            'timeout' => null,
-        ],
-
-        'log' => [
-            'transport' => 'log',
-            'channel' => env('MAIL_LOG_CHANNEL'),
-        ],
-    ],
-
-    'from' => [
-        'address' => env(
-            'MAIL_FROM_ADDRESS',
-            'admin.mushaa@gmail.com'
-        ),
-
-        'name' => env(
-            'MAIL_FROM_NAME',
-            'EastBus.lk'
-        ),
-    ],
-
-];
+        $resend->emails->send([
+            'from' => env(
+                'MAIL_FROM_ADDRESS',
+                'onboarding@resend.dev'
+            ),
+            'to' => [$to],
+            'subject' => $subject,
+            'html' => $html,
+        ]);
+    }
+}
