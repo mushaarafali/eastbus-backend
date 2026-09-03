@@ -1,0 +1,2 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; class Seat extends Model { protected $fillable=['bus_id','seat_number','is_disabled']; protected $casts=['is_disabled'=>'boolean']; public function bus(){return $this->belongsTo(Bus::class);} }

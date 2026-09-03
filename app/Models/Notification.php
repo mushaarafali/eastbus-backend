@@ -1,0 +1,2 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; class Notification extends Model { protected $fillable=['operator_id','target_type','title','message','sent_at']; protected $casts=['sent_at'=>'datetime']; public function operator(){return $this->belongsTo(Operator::class);} }

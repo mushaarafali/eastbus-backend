@@ -1,0 +1,2 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; class Staff extends Model { protected $fillable=['operator_id','full_name','role','nic','driving_licence_no','ntc_licence_no','phone','email','login_id','password','is_active']; protected $hidden=['password']; protected $casts=['password'=>'hashed','is_active'=>'boolean']; public function operator(){return $this->belongsTo(Operator::class);} }

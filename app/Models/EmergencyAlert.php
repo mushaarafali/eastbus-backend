@@ -1,0 +1,2 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; class EmergencyAlert extends Model { protected $fillable=['operator_id','trip_id','staff_id','message','latitude','longitude','status','resolved_at']; protected $casts=['resolved_at'=>'datetime']; public function trip(){return $this->belongsTo(Trip::class);} public function staff(){return $this->belongsTo(Staff::class);} }

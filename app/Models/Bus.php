@@ -1,0 +1,3 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; use Illuminate\Database\Eloquent\Factories\HasFactory;
+class Bus extends Model { use HasFactory; protected $fillable=['operator_id','bus_number','bus_name','route_permit_number','seat_count','bus_type','facilities','is_active']; protected $casts=['is_active'=>'boolean']; public function operator(){return $this->belongsTo(Operator::class);} public function seats(){return $this->hasMany(Seat::class);} public function trips(){return $this->hasMany(Trip::class);} }

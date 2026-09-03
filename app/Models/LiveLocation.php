@@ -1,0 +1,2 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; class LiveLocation extends Model { public $timestamps=false; protected $fillable=['trip_id','latitude','longitude','speed_kmh','recorded_at']; protected $casts=['recorded_at'=>'datetime']; public function trip(){return $this->belongsTo(Trip::class);} }

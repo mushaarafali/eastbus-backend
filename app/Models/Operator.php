@@ -1,0 +1,3 @@
+<?php
+namespace App\Models; use Illuminate\Database\Eloquent\Model; use Illuminate\Database\Eloquent\Factories\HasFactory;
+class Operator extends Model { use HasFactory; protected $fillable=['user_id','company_name','owner_name','phone','email','address','permit_or_registration_no','status','is_published']; protected $casts=['is_published'=>'boolean']; public function user(){return $this->belongsTo(User::class);} public function buses(){return $this->hasMany(Bus::class);} public function staff(){return $this->hasMany(Staff::class);} public function routes(){return $this->hasMany(Route::class);} public function trips(){return $this->hasMany(Trip::class);} }
