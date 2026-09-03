@@ -6,7 +6,7 @@
 
     <title>@yield('title', 'EastBus.lk')</title>
 
-    <link rel="stylesheet" href="{{ asset('css/eastbus.css') }}">
+    https://eastbus-backend-production.up.railway.app/css/eastbus.css
 
     @stack('head')
 </head>
