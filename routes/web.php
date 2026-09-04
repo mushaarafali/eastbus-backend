@@ -168,6 +168,12 @@ Route::prefix('operator')
         Route::post('/trips', [OperatorController::class, 'storeTrip'])
             ->name('trips.store');
 
+        Route::get('/trips/{trip}/edit', [OperatorController::class, 'editTrip'])
+            ->name('trips.edit');
+
+        Route::patch('/trips/{trip}', [OperatorController::class, 'updateTrip'])
+            ->name('trips.update');
+
         Route::patch('/trips/{trip}/publish', [OperatorController::class, 'toggleTripPublish'])
             ->name('trips.publish');
 

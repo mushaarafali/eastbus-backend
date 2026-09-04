@@ -595,117 +595,76 @@ class OperatorController extends Controller
         );
     }
 
-    public function storeTrip(
-        Request $request
-    ) {
+    public function storeTrip(Request $request)
+    {
         $operator = $this->op();
 
         $data = $request->validate([
-            'route_id' =>
-                'required|integer',
-
-            'bus_id' =>
-                'required|integer',
-
-            'driver_id' =>
-                'nullable|integer',
-
-            'conductor_id' =>
-                'nullable|integer',
-
-            'trip_type' =>
-                'required|in:starting,return',
-
-            'service_date' =>
-                'required|date|after_or_equal:today',
-
-            'departure_time' =>
-                'required',
-
-            'arrival_time' =>
-                'nullable',
-
-            'fare' =>
-                'required|numeric|min:0',
-
-            'is_published' =>
-                'nullable|boolean',
+            'route_id' => 'required|integer',
+            'bus_id' => 'required|integer',
+            'driver_id' => 'nullable|integer',
+            'conductor_id' => 'nullable|integer',
+            'trip_type' => 'required|in:starting,return',
+            'service_date' => 'required|date|after_or_equal:today',
+            'departure_time' => 'required',
+            'arrival_time' => 'nullable',
+            'fare' => 'required|numeric|min:0',
+            'schedule_days' => 'required|integer|in:1,7',
+            'is_published' => 'nullable|boolean',
         ]);
 
-        foreach (
-            [
-                'route_id' => Route::class,
-                'bus_id' => Bus::class,
-            ]
-            as $field => $class
-        ) {
-            $model =
-                $class::findOrFail(
-                    $data[$field]
-                );
+        $route = Route::findOrFail($data['route_id']);
+        $bus = Bus::findOrFail($data['bus_id']);
+        $this->own($route);
+        $this->own($bus);
 
-            $this->own($model);
+        if (!empty($data['driver_id'])) {
+            $driver = Staff::findOrFail($data['driver_id']);
+            $this->own($driver);
+            abort_unless($driver->role === 'driver', 422, 'Selected staff member is not a driver.');
         }
 
-        foreach (
-            [
-                'driver_id',
-                'conductor_id',
-            ]
-            as $field
-        ) {
-            if (!empty($data[$field])) {
-                $this->own(
-                    Staff::findOrFail(
-                        $data[$field]
-                    )
-                );
+        if (!empty($data['conductor_id'])) {
+            $conductor = Staff::findOrFail($data['conductor_id']);
+            $this->own($conductor);
+            abort_unless($conductor->role === 'conductor', 422, 'Selected staff member is not a conductor.');
+        }
+
+        $scheduleDays = (int) $data['schedule_days'];
+        $startDate = Carbon::parse($data['service_date'])->startOfDay();
+        $departureTime = Carbon::parse($data['departure_time'])->format('H:i:s');
+        $arrivalTime = !empty($data['arrival_time']) ? Carbon::parse($data['arrival_time'])->format('H:i:s') : null;
+        $firstDeparture = Carbon::createFromFormat('Y-m-d H:i:s', $startDate->format('Y-m-d') . ' ' . $departureTime, config('app.timezone'));
+
+        if (!$firstDeparture->isFuture()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'departure_time' => 'Trip departure date and time must be in the future.',
+            ]);
+        }
+
+        DB::transaction(function () use ($operator, $data, $scheduleDays, $startDate, $departureTime, $arrivalTime, $request) {
+            for ($i = 0; $i < $scheduleDays; $i++) {
+                $serviceDate = $startDate->copy()->addDays($i);
+                $trip = $operator->trips()->create([
+                    'route_id' => $data['route_id'],
+                    'bus_id' => $data['bus_id'],
+                    'driver_id' => $data['driver_id'] ?? null,
+                    'conductor_id' => $data['conductor_id'] ?? null,
+                    'trip_code' => $this->generateTripCode($operator),
+                    'trip_type' => $data['trip_type'],
+                    'service_date' => $serviceDate->format('Y-m-d'),
+                    'departure_time' => $departureTime,
+                    'arrival_time' => $arrivalTime,
+                    'fare' => $data['fare'],
+                    'status' => 'scheduled',
+                    'is_published' => $request->boolean('is_published'),
+                ]);
+
+                Audit::log('Create trip', 'Trips', $trip->trip_code);
             }
-        }
+        });
 
-        $departureAt = \Carbon\Carbon::parse($data['service_date'].' '.$data['departure_time']);
-        if (!$departureAt->isFuture()) {
-            throw \Illuminate\Validation\ValidationException::withMessages(['departure_time'=>'Trip departure date and time must be in the future.']);
-        }
-
-        $data['trip_code'] =
-            'TRP'
-            . now()->format('ymd')
-            . str_pad(
-                (string) (
-                    $operator
-                        ->trips()
-                        ->count() + 1
-                ),
-                4,
-                '0',
-                STR_PAD_LEFT
-            );
-
-        $trip = $operator
-            ->trips()
-            ->create(
-                $data + [
-                    'status' =>
-                        'scheduled',
-
-                    'is_published' =>
-                        $request->boolean(
-                            'is_published'
-                        ),
-                ]
-            );
-
-        Audit::log(
-            'Create trip',
-            'Trips',
-            $trip->trip_code
-        );
-
-        return back()->with(
-            'success',
-            'Trip scheduled.'
-        );
+        return back()->with('success', $scheduleDays === 7 ? 'Seven-day trip schedule created successfully.' : 'Trip scheduled successfully.');
     }
 
     public function toggleTripPublish(Trip $trip)
@@ -753,6 +712,72 @@ class OperatorController extends Controller
                 ? 'Trip published successfully.'
                 : 'Trip unpublished successfully.'
         );
+    }
+
+    public function editTrip(Trip $trip)
+    {
+        $this->own($trip);
+        $operator = $this->op();
+
+        return view('operator.trip_edit', [
+            'trip' => $trip->load(['route', 'bus', 'driver', 'conductor']),
+            'drivers' => $operator->staff()->where('role', 'driver')->where('is_active', true)->orderBy('full_name')->get(),
+            'conductors' => $operator->staff()->where('role', 'conductor')->where('is_active', true)->orderBy('full_name')->get(),
+        ]);
+    }
+
+    public function updateTrip(Request $request, Trip $trip)
+    {
+        $this->own($trip);
+
+        if ($trip->status !== 'scheduled') {
+            return back()->with('error', 'Only scheduled trips can be edited.');
+        }
+
+        $data = $request->validate([
+            'driver_id' => 'nullable|integer',
+            'conductor_id' => 'nullable|integer',
+            'service_date' => 'required|date|after_or_equal:today',
+            'departure_time' => 'required',
+            'arrival_time' => 'nullable',
+            'fare' => 'required|numeric|min:0',
+        ]);
+
+        if (!empty($data['driver_id'])) {
+            $driver = Staff::findOrFail($data['driver_id']);
+            $this->own($driver);
+            abort_unless($driver->role === 'driver', 422, 'Selected staff member is not a driver.');
+        }
+
+        if (!empty($data['conductor_id'])) {
+            $conductor = Staff::findOrFail($data['conductor_id']);
+            $this->own($conductor);
+            abort_unless($conductor->role === 'conductor', 422, 'Selected staff member is not a conductor.');
+        }
+
+        $serviceDate = Carbon::parse($data['service_date'])->format('Y-m-d');
+        $departureTime = Carbon::parse($data['departure_time'])->format('H:i:s');
+        $arrivalTime = !empty($data['arrival_time']) ? Carbon::parse($data['arrival_time'])->format('H:i:s') : null;
+        $departureAt = Carbon::createFromFormat('Y-m-d H:i:s', $serviceDate . ' ' . $departureTime, config('app.timezone'));
+
+        if (!$departureAt->isFuture()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'departure_time' => 'Trip departure date and time must be in the future.',
+            ]);
+        }
+
+        $trip->update([
+            'driver_id' => $data['driver_id'] ?? null,
+            'conductor_id' => $data['conductor_id'] ?? null,
+            'service_date' => $serviceDate,
+            'departure_time' => $departureTime,
+            'arrival_time' => $arrivalTime,
+            'fare' => $data['fare'],
+        ]);
+
+        Audit::log('Update trip', 'Trips', $trip->trip_code);
+
+        return redirect()->route('operator.trips')->with('success', 'Trip updated successfully.');
     }
 
     public function bookings()
@@ -1019,6 +1044,19 @@ class OperatorController extends Controller
             'success',
             'Alert resolved.'
         );
+    }
+
+    private function generateTripCode(Operator $operator): string
+    {
+        $prefix = 'TRP' . now()->format('ymd');
+        $nextNumber = $operator->trips()->count() + 1;
+
+        do {
+            $tripCode = $prefix . str_pad((string) $nextNumber, 4, '0', STR_PAD_LEFT);
+            $nextNumber++;
+        } while (Trip::where('trip_code', $tripCode)->exists());
+
+        return $tripCode;
     }
 
     private function generateStaffLoginId(
