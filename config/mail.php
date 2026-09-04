@@ -1,28 +1,46 @@
 <?php
 
-namespace App\Services;
+return [
 
-use Resend;
+    /*
+    |--------------------------------------------------------------------------
+    | Default Mailer
+    |--------------------------------------------------------------------------
+    */
 
-class EastBusMailService
-{
-    public static function send(
-        string $to,
-        string $subject,
-        string $html
-    ): void {
-        $resend = Resend::client(
-            env('re_LBPXzx6T_A9odz7HmexWdKMhbiJuiTCVT')
-        );
+    'default' => env('MAIL_MAILER', 'log'),
 
-        $resend->emails->send([
-            'from' => env(
-                'MAIL_FROM_ADDRESS',
-                'onboarding@resend.dev'
-            ),
-            'to' => [$to],
-            'subject' => $subject,
-            'html' => $html,
-        ]);
-    }
-}
+    /*
+    |--------------------------------------------------------------------------
+    | Mailers
+    |--------------------------------------------------------------------------
+    */
+
+    'mailers' => [
+
+        'log' => [
+            'transport' => 'log',
+            'channel' => env('MAIL_LOG_CHANNEL'),
+        ],
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Global From Address
+    |--------------------------------------------------------------------------
+    */
+
+    'from' => [
+        'address' => env(
+            'MAIL_FROM_ADDRESS',
+            'onboarding@resend.dev'
+        ),
+
+        'name' => env(
+            'MAIL_FROM_NAME',
+            'EastBus.lk'
+        ),
+    ],
+
+];

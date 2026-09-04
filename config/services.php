@@ -1,18 +1,15 @@
 <?php
 
 return [
-
-    /*
-    |--------------------------------------------------------------------------
-    | Gemini AI
-    |--------------------------------------------------------------------------
-    |
-    | Gemini API configuration for the EastBus AI Chatbot.
-    |
-    */
-
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
     ],
 
+    'resend' => [
+        'key' => env('RESEND_API_KEY'),
+    ],
+    'mailjet' => [
+    'key' => env('MAILJET_API_KEY'),
+    'secret' => env('MAILJET_SECRET_KEY'),
+],
 ];
