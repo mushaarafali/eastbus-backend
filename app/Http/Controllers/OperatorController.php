@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Carbon\Carbon;
 use App\Models\Booking;
 use App\Models\Bus;
 use App\Models\EmergencyAlert;
@@ -13,7 +14,6 @@ use App\Models\Seat;
 use App\Models\Staff;
 use App\Models\Trip;
 use App\Support\Audit;
-use App\Services\EastBusMailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -375,8 +375,6 @@ class OperatorController extends Controller
                 $data['role']
             );
 
-        $plainPassword = $data['password'];
-
         $data['password'] =
             Hash::make(
                 $data['password']
@@ -395,8 +393,6 @@ class OperatorController extends Controller
             'Staff',
             $staff->login_id
         );
-
-        app(EastBusMailService::class)->staffCreated($staff, $plainPassword);
 
         return back()->with(
             'success',
@@ -539,446 +535,225 @@ class OperatorController extends Controller
     }
 
     public function trips()
-{
-    $operator = $this->op();
+    {
+        $operator = $this->op();
 
-    return view(
-        'operator.trips',
-        [
-            'trips' => $operator
-                ->trips()
-                ->with([
-                    'route',
-                    'bus',
-                    'driver',
-                    'conductor',
-                ])
-                ->latest('service_date')
-                ->latest('departure_time')
-                ->get(),
+        return view(
+            'operator.trips',
+            [
+                'trips' => $operator
+                    ->trips()
+                    ->with([
+                        'route',
+                        'bus',
+                        'driver',
+                        'conductor',
+                    ])
+                    ->latest('service_date')
+                    ->get(),
 
-            'buses' => $operator
-                ->buses()
-                ->where('is_active', true)
-                ->orderBy('bus_number')
-                ->get(),
+                'buses' => $operator
+                    ->buses()
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->get(),
 
-            /*
-            |--------------------------------------------------------------------------
-            | Online Booking Route Rule
-            |--------------------------------------------------------------------------
-            |
-            | Operator scheduled trips must use routes that are
-            | at least 50 km long.
-            |
-            */
+                'routes' => $operator
+                    ->routes()
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->get(),
 
-            'routes' => $operator
-                ->routes()
-                ->where('is_active', true)
-                ->whereNotNull('distance_km')
-                ->where('distance_km', '>=', 50)
-                ->orderBy('name')
-                ->get(),
+                'drivers' => $operator
+                    ->staff()
+                    ->where(
+                        'role',
+                        'driver'
+                    )
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->get(),
 
-            'drivers' => $operator
-                ->staff()
-                ->where('role', 'driver')
-                ->where('is_active', true)
-                ->orderBy('full_name')
-                ->get(),
+                'conductors' => $operator
+                    ->staff()
+                    ->where(
+                        'role',
+                        'conductor'
+                    )
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->get(),
+            ]
+        );
+    }
 
-            'conductors' => $operator
-                ->staff()
-                ->where('role', 'conductor')
-                ->where('is_active', true)
-                ->orderBy('full_name')
-                ->get(),
-        ]
-    );
-}
-
- public function storeTrip(Request $request)
-{
-    $operator = $this->op();
-
-    $data = $request->validate([
-        'route_id' => [
-            'required',
-            'integer',
-        ],
-
-        'bus_id' => [
-            'required',
-            'integer',
-        ],
-
-        'driver_id' => [
-            'nullable',
-            'integer',
-        ],
-
-        'conductor_id' => [
-            'nullable',
-            'integer',
-        ],
-
-        'trip_type' => [
-            'required',
-            Rule::in([
-                'starting',
-                'return',
-            ]),
-        ],
-
-        'service_date' => [
-            'required',
-            'date',
-            'after_or_equal:today',
-        ],
-
-        'departure_time' => [
-            'required',
-        ],
-
-        'arrival_time' => [
-            'nullable',
-        ],
-
-        'fare' => [
-            'required',
-            'numeric',
-            'min:0',
-        ],
-
-        'is_published' => [
-            'nullable',
-            'boolean',
-        ],
-    ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Route Ownership
-    |--------------------------------------------------------------------------
-    */
-
-    $route = Route::findOrFail(
-        $data['route_id']
-    );
-
-    $this->own($route);
-
-    /*
-    |--------------------------------------------------------------------------
-    | Minimum 50 KM Rule
-    |--------------------------------------------------------------------------
-    |
-    | Operator-created trips are online-booking trips.
-    | Therefore route distance must be at least 50 km.
-    |
-    */
-
-    if (
-        $route->distance_km === null ||
-        (float) $route->distance_km < 50
+    public function storeTrip(
+        Request $request
     ) {
-        throw \Illuminate\Validation\ValidationException::withMessages([
+        $operator = $this->op();
+
+        $data = $request->validate([
             'route_id' =>
-                'Online-booking trips can only be scheduled for routes of 50 km or more.',
-        ]);
-    }
+                'required|integer',
 
-    if (!$route->is_active) {
-        throw \Illuminate\Validation\ValidationException::withMessages([
-            'route_id' =>
-                'The selected route is currently inactive.',
-        ]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Bus Ownership
-    |--------------------------------------------------------------------------
-    */
-
-    $bus = Bus::findOrFail(
-        $data['bus_id']
-    );
-
-    $this->own($bus);
-
-    if (!$bus->is_active) {
-        throw \Illuminate\Validation\ValidationException::withMessages([
             'bus_id' =>
-                'The selected bus is currently inactive.',
-        ]);
-    }
+                'required|integer',
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Driver
-    |--------------------------------------------------------------------------
-    */
+            'driver_id' =>
+                'nullable|integer',
 
-    $driver = null;
+            'conductor_id' =>
+                'nullable|integer',
 
-    if (!empty($data['driver_id'])) {
-        $driver = Staff::findOrFail(
-            $data['driver_id']
-        );
+            'trip_type' =>
+                'required|in:starting,return',
 
-        $this->own($driver);
+            'service_date' =>
+                'required|date|after_or_equal:today',
 
-        if ($driver->role !== 'driver') {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'driver_id' =>
-                    'The selected staff member is not a driver.',
-            ]);
-        }
-
-        if (!$driver->is_active) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'driver_id' =>
-                    'The selected driver is inactive.',
-            ]);
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Conductor
-    |--------------------------------------------------------------------------
-    */
-
-    $conductor = null;
-
-    if (!empty($data['conductor_id'])) {
-        $conductor = Staff::findOrFail(
-            $data['conductor_id']
-        );
-
-        $this->own($conductor);
-
-        if ($conductor->role !== 'conductor') {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'conductor_id' =>
-                    'The selected staff member is not a conductor.',
-            ]);
-        }
-
-        if (!$conductor->is_active) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'conductor_id' =>
-                    'The selected conductor is inactive.',
-            ]);
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Trip Date & Time
-    |--------------------------------------------------------------------------
-    */
-
-    $departureAt = \Carbon\Carbon::parse(
-        $data['service_date']
-        . ' '
-        . $data['departure_time']
-    );
-
-    if (!$departureAt->isFuture()) {
-        throw \Illuminate\Validation\ValidationException::withMessages([
             'departure_time' =>
-                'Trip departure date and time must be in the future.',
+                'required',
+
+            'arrival_time' =>
+                'nullable',
+
+            'fare' =>
+                'required|numeric|min:0',
+
+            'is_published' =>
+                'nullable|boolean',
         ]);
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validate Arrival Time
-    |--------------------------------------------------------------------------
-    */
+        foreach (
+            [
+                'route_id' => Route::class,
+                'bus_id' => Bus::class,
+            ]
+            as $field => $class
+        ) {
+            $model =
+                $class::findOrFail(
+                    $data[$field]
+                );
 
-    if (!empty($data['arrival_time'])) {
-        $arrivalAt = \Carbon\Carbon::parse(
-            $data['service_date']
-            . ' '
-            . $data['arrival_time']
-        );
-
-        /*
-         * If arrival is earlier than departure,
-         * treat it as next-day arrival.
-         */
-
-        if ($arrivalAt->lessThanOrEqualTo($departureAt)) {
-            $arrivalAt->addDay();
+            $this->own($model);
         }
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Generate Trip Code
-    |--------------------------------------------------------------------------
-    */
+        foreach (
+            [
+                'driver_id',
+                'conductor_id',
+            ]
+            as $field
+        ) {
+            if (!empty($data[$field])) {
+                $this->own(
+                    Staff::findOrFail(
+                        $data[$field]
+                    )
+                );
+            }
+        }
 
-    $nextNumber =
-        $operator->trips()->count() + 1;
+        $departureAt = \Carbon\Carbon::parse($data['service_date'].' '.$data['departure_time']);
+        if (!$departureAt->isFuture()) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['departure_time'=>'Trip departure date and time must be in the future.']);
+        }
 
-    do {
-        $tripCode =
+        $data['trip_code'] =
             'TRP'
             . now()->format('ymd')
             . str_pad(
-                (string) $nextNumber,
+                (string) (
+                    $operator
+                        ->trips()
+                        ->count() + 1
+                ),
                 4,
                 '0',
                 STR_PAD_LEFT
             );
 
-        $nextNumber++;
-    } while (
-        Trip::where(
-            'trip_code',
-            $tripCode
-        )->exists()
-    );
+        $trip = $operator
+            ->trips()
+            ->create(
+                $data + [
+                    'status' =>
+                        'scheduled',
 
-    $data['trip_code'] = $tripCode;
+                    'is_published' =>
+                        $request->boolean(
+                            'is_published'
+                        ),
+                ]
+            );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Create Trip
-    |--------------------------------------------------------------------------
-    */
-
-    $trip = $operator
-        ->trips()
-        ->create(
-            $data + [
-                'status' =>
-                    'scheduled',
-
-                'is_published' =>
-                    $request->boolean(
-                        'is_published'
-                    ),
-            ]
+        Audit::log(
+            'Create trip',
+            'Trips',
+            $trip->trip_code
         );
 
-    Audit::log(
-        'Create trip',
-        'Trips',
-        $trip->trip_code
-    );
-
-    return back()->with(
-        'success',
-        'Trip scheduled successfully for '
-        . number_format(
-            (float) $route->distance_km,
-            1
-        )
-        . ' km route.'
-    );
-}    
-
-public function toggleTripPublish(Trip $trip)
-{
-    $this->own($trip);
-
-    $trip->loadMissing('route');
-
-    /*
-    |--------------------------------------------------------------------------
-    | Publishing Trip
-    |--------------------------------------------------------------------------
-    */
-
-    if (!$trip->is_published) {
-
-        if (!$trip->route) {
-            return back()->with(
-                'error',
-                'The trip route could not be found.'
-            );
-        }
-
-        /*
-         * Minimum 50 km rule.
-         */
-
-        if (
-            $trip->route->distance_km === null ||
-            (float) $trip->route->distance_km < 50
-        ) {
-            return back()->with(
-                'error',
-                'Only routes of 50 km or more can be published for online booking.'
-            );
-        }
-
-        /*
-         * Route must be active.
-         */
-
-        if (!$trip->route->is_active) {
-            return back()->with(
-                'error',
-                'This route is inactive and cannot be published.'
-            );
-        }
-
-        /*
-         * Only scheduled trips can be published.
-         */
-
-        if ($trip->status !== 'scheduled') {
-            return back()->with(
-                'error',
-                'Started or completed trips cannot be published.'
-            );
-        }
-
-        /*
-         * Departure must still be in the future.
-         */
-
-        $departureAt = \Carbon\Carbon::parse(
-    (string) $trip->service_date
-    . ' '
-    . (string) $trip->departure_time
+        return back()->with(
+            'success',
+            'Trip scheduled.'
         );
-
-        if (!$departureAt->isFuture()) {
-            return back()->with(
-                'error',
-                'Past trips cannot be published.'
-            );
-        }
     }
 
-    $trip->update([
-        'is_published' =>
-            !$trip->is_published,
-    ]);
+    public function toggleTripPublish(Trip $trip)
+    {
+        $this->own($trip);
 
-    Audit::log(
-        $trip->is_published
-            ? 'Publish trip'
-            : 'Unpublish trip',
-        'Trips',
-        $trip->trip_code
-    );
+        if (!$trip->is_published) {
+            if ($trip->status !== 'scheduled') {
+                return back()->with(
+                    'error',
+                    'Only scheduled trips can be published.'
+                );
+            }
 
-    return back()->with(
-        'success',
-        $trip->is_published
-            ? 'Trip published for passenger online booking.'
-            : 'Trip unpublished.'
-    );
-}
+            $serviceDate = Carbon::parse($trip->service_date)->format('Y-m-d');
+            $departureTime = Carbon::parse($trip->departure_time)->format('H:i:s');
+
+            $departureAt = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $serviceDate . ' ' . $departureTime,
+                config('app.timezone')
+            );
+
+            if (!$departureAt->isFuture()) {
+                return back()->with(
+                    'error',
+                    'Past or started trips cannot be published.'
+                );
+            }
+        }
+
+        $trip->update([
+            'is_published' => !$trip->is_published,
+        ]);
+
+        Audit::log(
+            $trip->is_published ? 'Publish trip' : 'Unpublish trip',
+            'Trips',
+            $trip->trip_code
+        );
+
+        return back()->with(
+            'success',
+            $trip->is_published
+                ? 'Trip published successfully.'
+                : 'Trip unpublished successfully.'
+        );
+    }
 
     public function bookings()
     {
