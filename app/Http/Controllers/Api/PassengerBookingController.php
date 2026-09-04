@@ -392,6 +392,10 @@ class PassengerBookingController extends Controller
                     $passengerRow['gender'] = $traveller['gender'];
                 }
 
+                if (Schema::hasColumn('booking_passengers', 'nic')) {
+                    $passengerRow['nic'] = strtoupper(trim($data['primary_passenger_nic']));
+                }
+
                 if (Schema::hasColumn('booking_passengers', 'checked_in_at')) {
                     $passengerRow['checked_in_at'] = null;
                 }
