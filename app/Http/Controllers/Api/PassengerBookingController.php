@@ -221,7 +221,6 @@ class PassengerBookingController extends Controller
             'phone' => ['nullable', 'string', 'regex:/^\+94[0-9]{9}$/'],
             'travellers' => ['required', 'array', 'min:1', 'max:' . self::MAX_SEATS],
             'travellers.*.seat_number' => ['required', 'string', 'max:20'],
-            'travellers.*.name' => ['required', 'string', 'max:150'],
             'travellers.*.gender' => ['required', 'in:male,female'],
         ], [
             'primary_passenger_nic.regex' => 'Enter a valid Sri Lankan NIC number.',
