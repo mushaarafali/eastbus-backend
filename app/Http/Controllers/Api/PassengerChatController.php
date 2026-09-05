@@ -21,441 +21,272 @@ class PassengerChatController extends Controller
     public function chat(Request $request)
     {
         $data = $request->validate([
-            'message' => [
-                'required',
-                'string',
-                'max:1500',
-            ],
-
-            'context' => [
-                'nullable',
-                'array',
-            ],
+            'message' => ['required', 'string', 'max:1500'],
+            'context' => ['nullable', 'array'],
         ]);
 
-        $apiKey = config(
-            'services.gemini.key'
-        );
-
-        if (empty($apiKey)) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Gemini API key is not configured.',
-            ], 500);
-        }
-
         try {
-            $message = trim(
-                (string) $data['message']
-            );
+            $message = trim((string) $data['message']);
+            $passengerContext = $data['context'] ?? [];
 
-            $passengerContext =
-                $data['context'] ?? [];
+            // 1. EastBus DB first. Matching route/service data is returned
+            // directly so Gemini downtime never blocks bus-information queries.
+            $databaseContext = $this->buildDatabaseContext($message);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Flutter / Passenger Context
-            |--------------------------------------------------------------------------
-            */
-
-            $passengerContextText =
-                $this->buildPassengerContextText(
-                    $passengerContext
-                );
-
-            /*
-            |--------------------------------------------------------------------------
-            | EastBus Database Context
-            |--------------------------------------------------------------------------
-            |
-            | Search:
-            |
-            | - Routes
-            | - Road Way Stops
-            | - Booking Stops
-            | - Online Trips
-            | - Buses
-            | - Daily Service Buses
-            |
-            */
-
-            $databaseContext =
-                $this->buildDatabaseContext(
-                    $message
-                );
-
-            $databaseContextText =
-                json_encode(
-                    $databaseContext,
-                    JSON_PRETTY_PRINT |
-                    JSON_UNESCAPED_UNICODE |
-                    JSON_UNESCAPED_SLASHES
-                );
-
-            if (!$databaseContextText) {
-                $databaseContextText =
-                    'No matching EastBus database data was found.';
+            if ($this->hasDatabaseMatch($databaseContext)) {
+                return response()->json([
+                    'success' => true,
+                    'reply' => $this->buildDirectDatabaseReply($databaseContext),
+                    'source' => 'eastbus_database',
+                    'database_match' => true,
+                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Gemini Prompt
-            |--------------------------------------------------------------------------
-            */
+            // 2. Gemini is only a fallback for questions not answered by DB.
+            $apiKey = config('services.gemini.key');
+
+            if (empty($apiKey)) {
+                return response()->json([
+                    'success' => true,
+                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
+                    'source' => 'eastbus_database_fallback',
+                    'database_match' => false,
+                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+                ]);
+            }
+
+            $passengerContextText = $this->buildPassengerContextText($passengerContext);
 
             $prompt = <<<PROMPT
-You are EastBus AI Assistant.
+You are EastBus AI Assistant, the official passenger-support assistant for EastBus in Sri Lanka.
 
-You are the official passenger-support AI assistant for EastBus,
-a smart transportation platform for private long-distance buses
-in Sri Lanka.
+Reply only in English, Tamil, or Sinhala based on the passenger's language.
+Keep answers short, clear, practical, and passenger-friendly.
 
-============================================================
-LANGUAGE
-============================================================
+Important rules:
+- EastBus database did not return a matching direct service for this query.
+- Never invent buses, routes, fares, schedules, booking availability, booking references, passenger details, live locations, or trip statuses.
+- If the passenger asks about a route/bus that is not in EastBus data, clearly say no matching EastBus service was found.
+- You may explain how to use Search Buses, booking, tickets, tracking, payments, feedback, login, or OTP features.
+- Never ask for passwords, OTPs, CVV, full card numbers, API keys, or tokens.
+- Use personal booking/trip details only if they appear in PASSENGER CONTEXT.
 
-Support only:
-
-1. English
-2. Tamil
-3. Sinhala
-
-Rules:
-
-- English question → reply in English.
-- Tamil question → reply in Tamil.
-- Sinhala question → reply in Sinhala.
-- Tamil + English mixed → reply mainly in Tamil with simple English transport terms.
-- Sinhala + English mixed → reply mainly in Sinhala with simple English transport terms.
-- Keep answers short, practical, clear and passenger-friendly.
-
-============================================================
-MOST IMPORTANT DATABASE RULE
-============================================================
-
-The EASTBUS DATABASE CONTEXT below is the primary source for
-routes, buses, schedules, booking availability and service information.
-
-STRICT RULES:
-
-1. Never invent a bus.
-2. Never invent a route.
-3. Never invent a timetable.
-4. Never invent a fare.
-5. Never invent booking availability.
-6. Never invent contact numbers.
-7. Never invent a departure or arrival time.
-8. Never invent a Daily Service Bus.
-9. Never claim a direct service exists unless the database context shows it.
-10. Never modify database values.
-
-If matching EastBus database information exists:
-- answer using that information first;
-- clearly mention matching buses or routes;
-- show useful boarding/drop-off times when available;
-- tell the passenger whether online booking is available;
-- mention Daily Service Bus services separately when relevant.
-
-If multiple buses match:
-- provide the best matching options in a short numbered list.
-
-If no direct service is found:
-- clearly say no matching direct EastBus service was found;
-- if the database contains a route or service that partially matches,
-  explain it carefully without pretending it is direct.
-
-Do NOT tell the passenger that you cannot access the database
-when EASTBUS DATABASE CONTEXT contains matching records.
-
-============================================================
-ONLINE BOOKING
-============================================================
-
-Online booking may be available only when:
-
-- the trip is published;
-- booking is open;
-- the selected stops are approved booking stops;
-- the journey satisfies EastBus booking rules.
-
-Maximum seats per booking: 6.
-
-Do not ask the passenger to send:
-- password
-- OTP
-- CVV
-- full card number
-- API keys
-- authentication tokens
-
-============================================================
-DAILY SERVICE BUS
-============================================================
-
-EastBus may contain Daily Service Bus information.
-
-A Daily Service Bus may provide:
-
-- bus name
-- bus number
-- road way
-- Starting daily service
-- Return daily service
-- boarding/drop-off stops
-- arrival/departure times
-- contact numbers
-
-Daily Service Bus information does NOT automatically mean
-online seat booking is available.
-
-State this clearly when necessary.
-
-============================================================
-ONLINE TRIPS
-============================================================
-
-When an online trip is present, useful information may include:
-
-- company
-- bus number
-- bus type
-- route
-- service date
-- boarding stop
-- boarding time
-- drop-off stop
-- drop-off time
-- fare
-- booking availability
-
-Only display values present in the database context.
-
-============================================================
-PERSONAL PASSENGER DATA
-============================================================
-
-Use personal booking/trip information only when it exists in
-PASSENGER CONTEXT.
-
-Never expose information belonging to another passenger.
-
-============================================================
-LIVE TRACKING
-============================================================
-
-Never claim a bus is currently at a particular location unless
-live tracking information is explicitly included in PASSENGER CONTEXT.
-
-============================================================
-RESPONSE STYLE
-============================================================
-
-Prefer responses such as:
-
-"I found 2 EastBus services from Batticaloa to Galle."
-
-Then list only the useful details.
-
-Do not give long explanations unless asked.
-
-============================================================
-EASTBUS DATABASE CONTEXT
-============================================================
-
-{$databaseContextText}
-
-============================================================
-PASSENGER CONTEXT
-============================================================
-
+PASSENGER CONTEXT:
 {$passengerContextText}
 
-============================================================
-PASSENGER MESSAGE
-============================================================
-
+PASSENGER MESSAGE:
 {$message}
 PROMPT;
 
-            /*
-            |--------------------------------------------------------------------------
-            | Gemini Request
-            |--------------------------------------------------------------------------
-            */
-
-            $response = Http::timeout(30)
-                ->retry(
-                    1,
-                    500
-                )
+            $response = Http::timeout(18)
+                ->retry(1, 700, throw: false)
                 ->withHeaders([
-                    'x-goog-api-key' =>
-                        $apiKey,
-
-                    'Content-Type' =>
-                        'application/json',
+                    'x-goog-api-key' => $apiKey,
+                    'Content-Type' => 'application/json',
                 ])
                 ->post(
                     'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent',
                     [
-                        'contents' => [
-                            [
-                                'role' => 'user',
-
-                                'parts' => [
-                                    [
-                                        'text' =>
-                                            $prompt,
-                                    ],
-                                ],
-                            ],
-                        ],
-
+                        'contents' => [[
+                            'role' => 'user',
+                            'parts' => [['text' => $prompt]],
+                        ]],
                         'generationConfig' => [
-                            'temperature' =>
-                                0.20,
-
-                            'topP' =>
-                                0.85,
-
-                            'maxOutputTokens' =>
-                                900,
+                            'temperature' => 0.20,
+                            'topP' => 0.85,
+                            'maxOutputTokens' => 500,
                         ],
                     ]
                 );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Gemini Error
-            |--------------------------------------------------------------------------
-            */
 
             if (!$response->successful()) {
-                Log::error(
-                    'Gemini API Error',
-                    [
-                        'status' =>
-                            $response->status(),
-
-                        'response' =>
-                            $response->body(),
-                    ]
-                );
+                Log::warning('Gemini API Fallback Error', [
+                    'status' => $response->status(),
+                    'response' => $response->body(),
+                ]);
 
                 return response()->json([
-                    'success' => false,
-
-                    'message' =>
-                        'EastBus AI Assistant is temporarily unavailable. Please try again.',
-                ], 502);
+                    'success' => true,
+                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
+                    'source' => 'eastbus_database_fallback',
+                    'database_match' => false,
+                    'gemini_status' => $response->status(),
+                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Gemini Response
-            |--------------------------------------------------------------------------
-            */
+            $reply = data_get($response->json(), 'candidates.0.content.parts.0.text');
 
-            $responseData =
-                $response->json();
-
-            $reply = data_get(
-                $responseData,
-                'candidates.0.content.parts.0.text'
-            );
-
-            if (
-                !is_string($reply) ||
-                trim($reply) === ''
-            ) {
-                Log::warning(
-                    'Gemini Empty Response',
-                    [
-                        'response' =>
-                            $responseData,
-                    ]
-                );
-
+            if (!is_string($reply) || trim($reply) === '') {
                 return response()->json([
-                    'success' => false,
-
-                    'message' =>
-                        'EastBus AI Assistant did not return a response. Please try again.',
-                ], 502);
+                    'success' => true,
+                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
+                    'source' => 'eastbus_database_fallback',
+                    'database_match' => false,
+                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+                ]);
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Success
-            |--------------------------------------------------------------------------
-            */
 
             return response()->json([
-                'success' =>
-                    true,
-
-                'reply' =>
-                    trim($reply),
-
-                'database_match' =>
-                    !empty(
-                        $databaseContext[
-                            'matched_locations'
-                        ]
-                    ),
-
-                'matched_locations' =>
-                    $databaseContext[
-                        'matched_locations'
-                    ] ?? [],
-
-                'model' =>
-                    'gemini-3.6-flash',
+                'success' => true,
+                'reply' => trim($reply),
+                'source' => 'gemini',
+                'database_match' => false,
+                'matched_locations' => $databaseContext['matched_locations'] ?? [],
+                'model' => 'gemini-3.6-flash',
             ]);
 
-        } catch (
-            \Illuminate\Http\Client\ConnectionException $e
-        ) {
-            Log::error(
-                'Gemini Connection Error',
-                [
-                    'message' =>
-                        $e->getMessage(),
-                ]
-            );
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            Log::warning('Gemini Connection Error', ['message' => $e->getMessage()]);
 
             return response()->json([
-                'success' => false,
-
-                'message' =>
-                    'Unable to connect to EastBus AI Assistant. Please try again.',
-            ], 503);
+                'success' => true,
+                'reply' => 'I could not find a matching EastBus service in the database right now. Please use Search Buses in the EastBus Passenger App to check the latest available services.',
+                'source' => 'eastbus_database_fallback',
+                'database_match' => false,
+            ]);
 
         } catch (\Throwable $e) {
-            Log::error(
-                'Passenger Chatbot Error',
-                [
-                    'message' =>
-                        $e->getMessage(),
-
-                    'file' =>
-                        $e->getFile(),
-
-                    'line' =>
-                        $e->getLine(),
-
-                    'trace' =>
-                        $e->getTraceAsString(),
-                ]
-            );
+            Log::error('Passenger Chatbot Error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
 
             return response()->json([
                 'success' => false,
-
-                'message' =>
-                    'Unable to process your message right now.',
+                'message' => 'Unable to process your message right now.',
             ], 500);
+        }
+    }
+
+    private function hasDatabaseMatch(array $context): bool
+    {
+        return !empty($context['online_trips'] ?? [])
+            || !empty($context['daily_service_buses'] ?? [])
+            || !empty($context['routes'] ?? []);
+    }
+
+    private function buildDirectDatabaseReply(array $context): string
+    {
+        $locations = $context['matched_locations'] ?? [];
+        $origin = $locations[0] ?? 'selected origin';
+        $destination = $locations[1] ?? 'selected destination';
+        $onlineTrips = $context['online_trips'] ?? [];
+        $dailyServices = $context['daily_service_buses'] ?? [];
+        $routes = $context['routes'] ?? [];
+        $lines = [];
+
+        $serviceCount = count($onlineTrips) + count($dailyServices);
+
+        if ($serviceCount > 0) {
+            $lines[] = "I found {$serviceCount} EastBus service" . ($serviceCount === 1 ? '' : 's') . " from {$origin} to {$destination}.";
+        } elseif (!empty($routes)) {
+            $lines[] = "I found an EastBus route from {$origin} to {$destination}, but there is no currently published passenger service for it.";
+        }
+
+        foreach (array_slice($onlineTrips, 0, 5) as $i => $trip) {
+            $name = trim((string) ($trip['company_name'] ?? $trip['bus_name'] ?? 'EastBus Service'));
+            $number = trim((string) ($trip['bus_number'] ?? ''));
+            $heading = ($i + 1) . '. ' . $name . ($number !== '' ? " ({$number})" : '');
+            $lines[] = $heading;
+
+            if (!empty($trip['service_date'])) {
+                $lines[] = '   Date: ' . $trip['service_date'];
+            }
+
+            $boarding = '   Boarding: ' . ($trip['boarding_stop'] ?? $origin);
+            if (!empty($trip['boarding_time'])) {
+                $boarding .= ' - ' . $this->formatTime($trip['boarding_time']);
+            }
+            $lines[] = $boarding;
+
+            $dropoff = '   Drop-off: ' . ($trip['dropoff_stop'] ?? $destination);
+            if (!empty($trip['dropoff_time'])) {
+                $dropoff .= ' - ' . $this->formatTime($trip['dropoff_time']);
+            }
+            $lines[] = $dropoff;
+
+            if (isset($trip['fare']) && $trip['fare'] !== null) {
+                $lines[] = '   Fare: Rs. ' . number_format((float) $trip['fare'], 2);
+            }
+
+            $lines[] = '   Online Booking: ' . (!empty($trip['booking_available']) ? 'Available' : 'Not Available');
+        }
+
+        if (!empty($dailyServices)) {
+            if (!empty($onlineTrips)) {
+                $lines[] = '';
+            }
+            $lines[] = 'Daily Service Bus:';
+
+            foreach (array_slice($dailyServices, 0, 5) as $i => $service) {
+                $name = trim((string) ($service['bus_name'] ?? 'Daily Service Bus'));
+                $number = trim((string) ($service['bus_number'] ?? ''));
+                $lines[] = ($i + 1) . '. ' . $name . ($number !== '' ? " ({$number})" : '');
+
+                $boarding = '   Boarding: ' . ($service['boarding_stop'] ?? $origin);
+                if (!empty($service['boarding_time'])) {
+                    $boarding .= ' - ' . $this->formatTime($service['boarding_time']);
+                }
+                $lines[] = $boarding;
+
+                $dropoff = '   Drop-off: ' . ($service['dropoff_stop'] ?? $destination);
+                if (!empty($service['dropoff_time'])) {
+                    $dropoff .= ' - ' . $this->formatTime($service['dropoff_time']);
+                }
+                $lines[] = $dropoff;
+
+                $contacts = collect([
+                    $service['contact_number_1'] ?? null,
+                    $service['contact_number_2'] ?? null,
+                    $service['contact_number_3'] ?? null,
+                ])->filter()->unique()->values()->all();
+
+                if (!empty($contacts)) {
+                    $lines[] = '   Contact: ' . implode(' / ', $contacts);
+                }
+
+                $lines[] = '   Online Booking: Not Available';
+            }
+        }
+
+        if (empty($onlineTrips) && empty($dailyServices) && !empty($routes)) {
+            $lines[] = 'Please use Search Buses in the EastBus Passenger App to check future published trips.';
+        }
+
+        return implode("\n", $lines);
+    }
+
+    private function buildNoDatabaseMatchReply(array $context): string
+    {
+        $locations = $context['matched_locations'] ?? [];
+
+        if (count($locations) >= 2) {
+            return 'I could not find a matching EastBus service from '
+                . $locations[0]
+                . ' to '
+                . $locations[1]
+                . '. Please use Search Buses in the EastBus Passenger App to check the latest available services.';
+        }
+
+        return 'I could not find matching EastBus route or bus information for that question. Please use Search Buses in the EastBus Passenger App or ask with both origin and destination.';
+    }
+
+    private function formatTime($value): string
+    {
+        $text = trim((string) $value);
+
+        if ($text === '') {
+            return '';
+        }
+
+        try {
+            return \Carbon\Carbon::parse($text)->format('h:i A');
+        } catch (\Throwable $e) {
+            return $text;
         }
     }
 
