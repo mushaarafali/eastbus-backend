@@ -23,6 +23,54 @@ class OperatorRouteController extends Controller
                 ->where('route_id', $route->id)
                 ->orderBy('stop_order')
                 ->get();
+
+            $route->starting_booking_stops = DB::table('route_booking_stops')
+                ->join(
+                    'route_stops',
+                    'route_stops.id',
+                    '=',
+                    'route_booking_stops.route_stop_id'
+                )
+                ->where(
+                    'route_booking_stops.route_id',
+                    $route->id
+                )
+                ->where(
+                    'route_booking_stops.direction',
+                    'starting'
+                )
+                ->orderBy(
+                    'route_booking_stops.stop_order'
+                )
+                ->select(
+                    'route_booking_stops.*',
+                    'route_stops.name as stop_name'
+                )
+                ->get();
+
+            $route->return_booking_stops = DB::table('route_booking_stops')
+                ->join(
+                    'route_stops',
+                    'route_stops.id',
+                    '=',
+                    'route_booking_stops.route_stop_id'
+                )
+                ->where(
+                    'route_booking_stops.route_id',
+                    $route->id
+                )
+                ->where(
+                    'route_booking_stops.direction',
+                    'return'
+                )
+                ->orderBy(
+                    'route_booking_stops.stop_order'
+                )
+                ->select(
+                    'route_booking_stops.*',
+                    'route_stops.name as stop_name'
+                )
+                ->get();
         }
 
         return view(
@@ -33,85 +81,84 @@ class OperatorRouteController extends Controller
 
     public function create()
     {
-        return view(
-            'operator.routes.form',
-            [
-                'route' => null,
-                'stops' => collect(),
-            ]
-        );
+        return view('operator.routes.form', [
+            'route' => null,
+            'stops' => collect(),
+            'startingBookingStops' => collect(),
+            'returnBookingStops' => collect(),
+        ]);
     }
 
     public function store(Request $request)
     {
-        $operatorId = $this->operatorId(
-            $request
-        );
+        $operatorId = $this->operatorId($request);
 
-        $data = $this->validateRoute(
-            $request
-        );
+        $data = $this->validateRoute($request);
 
-        $routeId = DB::transaction(
-            function () use (
-                $operatorId,
-                $data
+        $routeId = DB::transaction(function () use (
+            $operatorId,
+            $data
+        ) {
+            $firstStop = $data['stops'][0];
+
+            $lastStop = $data['stops'][
+                count($data['stops']) - 1
+            ];
+
+            $routeRow = [
+                'operator_id' => $operatorId,
+                'name' =>
+                    $firstStop['name'] .
+                    ' - ' .
+                    $lastStop['name'],
+                'origin' => $firstStop['name'],
+                'destination' => $lastStop['name'],
+                'distance_km' =>
+                    $lastStop['distance_from_origin'],
+                'duration_minutes' =>
+                    $data['duration_minutes'] ?? null,
+                'base_fare' => 0,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+
+            if (
+                Schema::hasColumn(
+                    'routes',
+                    'route_number'
+                )
             ) {
-                $firstStop = $data['stops'][0];
-
-                $lastStop = $data['stops'][
-                    count($data['stops']) - 1
-                ];
-
-                $routeId = DB::table(
-                    'routes'
-                )->insertGetId([
-                    'operator_id' => $operatorId,
-
-                    'name' =>
-                        $firstStop['name'] .
-                        ' - ' .
-                        $lastStop['name'],
-
-                    'origin' =>
-                        $firstStop['name'],
-
-                    'destination' =>
-                        $lastStop['name'],
-
-                    'distance_km' =>
-                        $lastStop[
-                            'distance_from_origin'
-                        ],
-
-                    'duration_minutes' =>
-                        $data[
-                            'duration_minutes'
-                        ] ?? null,
-
-                    /*
-                     * Fare is calculated using
-                     * NTC fare-stage difference.
-                     *
-                     * Operator does not enter
-                     * route fare manually.
-                     */
-                    'base_fare' => 0,
-
-                    'is_active' => true,
-
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-
-                $this->saveStops(
-                    $routeId,
-                    $data['stops']
-                );
-
-                return $routeId;
+                $routeRow['route_number'] =
+                    $data['route_number'] ?? null;
             }
-        );
+
+            $routeId = DB::table('routes')
+                ->insertGetId($routeRow);
+
+            $roadStopIds = $this->saveRoadStops(
+                $routeId,
+                $data['stops']
+            );
+
+            $this->saveBookingStops(
+                $routeId,
+                'starting',
+                $data['starting_booking_stops'],
+                $data['stops'],
+                $roadStopIds
+            );
+
+            $this->saveBookingStops(
+                $routeId,
+                'return',
+                $data['return_booking_stops'],
+                $data['stops'],
+                $roadStopIds
+            );
+
+            return $routeId;
+        });
 
         return redirect()
             ->route(
@@ -140,28 +187,35 @@ class OperatorRouteController extends Controller
             )
             ->first();
 
-        abort_unless(
-            $route,
-            404
-        );
+        abort_unless($route, 404);
 
-        $stops = DB::table(
-            'route_stops'
-        )
+        $stops = DB::table('route_stops')
             ->where(
                 'route_id',
                 $route->id
             )
-            ->orderBy(
-                'stop_order'
-            )
+            ->orderBy('stop_order')
             ->get();
+
+        $startingBookingStops =
+            $this->bookingStopsForEdit(
+                $route->id,
+                'starting'
+            );
+
+        $returnBookingStops =
+            $this->bookingStopsForEdit(
+                $route->id,
+                'return'
+            );
 
         return view(
             'operator.routes.form',
             compact(
                 'route',
-                'stops'
+                'stops',
+                'startingBookingStops',
+                'returnBookingStops'
             )
         );
     }
@@ -174,10 +228,6 @@ class OperatorRouteController extends Controller
             $request
         );
 
-        $data = $this->validateRoute(
-            $request
-        );
-
         $route = DB::table('routes')
             ->where('id', $id)
             ->where(
@@ -186,73 +236,84 @@ class OperatorRouteController extends Controller
             )
             ->first();
 
-        abort_unless(
-            $route,
-            404
+        abort_unless($route, 404);
+
+        $data = $this->validateRoute(
+            $request
         );
 
-        DB::transaction(
-            function () use (
-                $id,
-                $data
-            ) {
-                $firstStop =
-                    $data['stops'][0];
+        DB::transaction(function () use (
+            $id,
+            $data
+        ) {
+            $firstStop = $data['stops'][0];
 
-                $lastStop =
-                    $data['stops'][
-                        count(
-                            $data['stops']
-                        ) - 1
-                    ];
+            $lastStop = $data['stops'][
+                count($data['stops']) - 1
+            ];
 
-                DB::table('routes')
-                    ->where(
-                        'id',
-                        $id
-                    )
-                    ->update([
-                        'name' =>
-                            $firstStop['name'] .
-                            ' - ' .
-                            $lastStop['name'],
+            $routeRow = [
+                'name' =>
+                    $firstStop['name'] .
+                    ' - ' .
+                    $lastStop['name'],
+                'origin' => $firstStop['name'],
+                'destination' => $lastStop['name'],
+                'distance_km' =>
+                    $lastStop['distance_from_origin'],
+                'duration_minutes' =>
+                    $data['duration_minutes'] ?? null,
+                'base_fare' => 0,
+                'updated_at' => now(),
+            ];
 
-                        'origin' =>
-                            $firstStop['name'],
-
-                        'destination' =>
-                            $lastStop['name'],
-
-                        'distance_km' =>
-                            $lastStop[
-                                'distance_from_origin'
-                            ],
-
-                        'duration_minutes' =>
-                            $data[
-                                'duration_minutes'
-                            ] ?? null,
-
-                        'base_fare' => 0,
-
-                        'updated_at' => now(),
-                    ]);
-
-                DB::table(
-                    'route_stops'
+            if (
+                Schema::hasColumn(
+                    'routes',
+                    'route_number'
                 )
-                    ->where(
-                        'route_id',
-                        $id
-                    )
-                    ->delete();
-
-                $this->saveStops(
-                    $id,
-                    $data['stops']
-                );
+            ) {
+                $routeRow['route_number'] =
+                    $data['route_number'] ?? null;
             }
-        );
+
+            DB::table('routes')
+                ->where('id', $id)
+                ->update($routeRow);
+
+            /*
+             * Delete booking points first because
+             * they reference route_stops.
+             */
+            DB::table('route_booking_stops')
+                ->where('route_id', $id)
+                ->delete();
+
+            DB::table('route_stops')
+                ->where('route_id', $id)
+                ->delete();
+
+            $roadStopIds = $this->saveRoadStops(
+                $id,
+                $data['stops']
+            );
+
+            $this->saveBookingStops(
+                $id,
+                'starting',
+                $data['starting_booking_stops'],
+                $data['stops'],
+                $roadStopIds
+            );
+
+            $this->saveBookingStops(
+                $id,
+                'return',
+                $data['return_booking_stops'],
+                $data['stops'],
+                $roadStopIds
+            );
+        });
 
         return back()->with(
             'success',
@@ -269,28 +330,17 @@ class OperatorRouteController extends Controller
         );
 
         $route = DB::table('routes')
-            ->where(
-                'id',
-                $id
-            )
+            ->where('id', $id)
             ->where(
                 'operator_id',
                 $operatorId
             )
             ->first();
 
-        abort_unless(
-            $route,
-            404
-        );
+        abort_unless($route, 404);
 
-        $hasTrips = DB::table(
-            'trips'
-        )
-            ->where(
-                'route_id',
-                $id
-            )
+        $hasTrips = DB::table('trips')
+            ->where('route_id', $id)
             ->exists();
 
         if ($hasTrips) {
@@ -300,32 +350,22 @@ class OperatorRouteController extends Controller
             ]);
         }
 
-        DB::transaction(
-            function () use ($id) {
-                DB::table(
-                    'route_stops'
-                )
-                    ->where(
-                        'route_id',
-                        $id
-                    )
-                    ->delete();
+        DB::transaction(function () use ($id) {
+            DB::table('route_booking_stops')
+                ->where('route_id', $id)
+                ->delete();
 
-                DB::table(
-                    'routes'
-                )
-                    ->where(
-                        'id',
-                        $id
-                    )
-                    ->delete();
-            }
-        );
+            DB::table('route_stops')
+                ->where('route_id', $id)
+                ->delete();
+
+            DB::table('routes')
+                ->where('id', $id)
+                ->delete();
+        });
 
         return redirect()
-            ->route(
-                'operator.routes.index'
-            )
+            ->route('operator.routes.index')
             ->with(
                 'success',
                 'Route deleted successfully.'
@@ -336,11 +376,23 @@ class OperatorRouteController extends Controller
         Request $request
     ): array {
         $data = $request->validate([
+            'route_number' => [
+                'nullable',
+                'string',
+                'max:50',
+            ],
+
             'duration_minutes' => [
                 'nullable',
                 'integer',
                 'min:1',
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Full Road Way
+            |--------------------------------------------------------------------------
+            */
 
             'stops' => [
                 'required',
@@ -354,10 +406,6 @@ class OperatorRouteController extends Controller
                 'max:150',
             ],
 
-            /*
-             * Every roadway stop must have
-             * an NTC Fare Stage No.
-             */
             'stops.*.fare_stage_no' => [
                 'required',
                 'integer',
@@ -365,10 +413,6 @@ class OperatorRouteController extends Controller
                 'max:350',
             ],
 
-            /*
-             * Cumulative road distance
-             * from route origin.
-             */
             'stops.*.distance_from_origin' => [
                 'required',
                 'numeric',
@@ -376,24 +420,48 @@ class OperatorRouteController extends Controller
             ],
 
             /*
-             * Passenger booking eligibility.
-             */
-            'stops.*.booking_allowed' => [
-                'nullable',
-                'boolean',
+            |--------------------------------------------------------------------------
+            | Starting Booking Points
+            |--------------------------------------------------------------------------
+            */
+
+            'starting_booking_stops' => [
+                'required',
+                'array',
+                'min:2',
             ],
 
-            /*
-             * Timetable values for
-             * bookable stops.
-             */
-            'stops.*.starting_time' => [
-                'nullable',
+            'starting_booking_stops.*.road_stop_index' => [
+                'required',
+                'integer',
+                'min:0',
+            ],
+
+            'starting_booking_stops.*.schedule_time' => [
+                'required',
                 'date_format:H:i',
             ],
 
-            'stops.*.return_time' => [
-                'nullable',
+            /*
+            |--------------------------------------------------------------------------
+            | Return Booking Points
+            |--------------------------------------------------------------------------
+            */
+
+            'return_booking_stops' => [
+                'required',
+                'array',
+                'min:2',
+            ],
+
+            'return_booking_stops.*.road_stop_index' => [
+                'required',
+                'integer',
+                'min:0',
+            ],
+
+            'return_booking_stops.*.schedule_time' => [
+                'required',
                 'date_format:H:i',
             ],
         ]);
@@ -401,61 +469,30 @@ class OperatorRouteController extends Controller
         $stops = collect(
             $data['stops']
         )
-            ->map(
-                function ($stop) {
-                    return [
-                        'name' => trim(
-                            (string) $stop['name']
-                        ),
+            ->map(function ($stop) {
+                return [
+                    'name' => trim(
+                        (string) $stop['name']
+                    ),
 
-                        'fare_stage_no' =>
-                            (int) $stop[
-                                'fare_stage_no'
-                            ],
+                    'fare_stage_no' =>
+                        (int) $stop[
+                            'fare_stage_no'
+                        ],
 
-                        'distance_from_origin' =>
-                            (float) $stop[
-                                'distance_from_origin'
-                            ],
-
-                        'booking_allowed' =>
-                            !empty(
-                                $stop[
-                                    'booking_allowed'
-                                ]
-                            ),
-
-                        'starting_time' =>
-                            !empty(
-                                $stop[
-                                    'starting_time'
-                                ]
-                            )
-                                ? $stop[
-                                    'starting_time'
-                                ]
-                                : null,
-
-                        'return_time' =>
-                            !empty(
-                                $stop[
-                                    'return_time'
-                                ]
-                            )
-                                ? $stop[
-                                    'return_time'
-                                ]
-                                : null,
-                    ];
-                }
-            )
+                    'distance_from_origin' =>
+                        (float) $stop[
+                            'distance_from_origin'
+                        ],
+                ];
+            })
             ->values();
 
         /*
-         |--------------------------------------------------------------------------
-         | First Stop Distance
-         |--------------------------------------------------------------------------
-         */
+        |--------------------------------------------------------------------------
+        | First Road Way Stop
+        |--------------------------------------------------------------------------
+        */
 
         if (
             (float) $stops->first()[
@@ -464,15 +501,15 @@ class OperatorRouteController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'stops.0.distance_from_origin' =>
-                    'The first stop distance must be 0 km.',
+                    'The first road-way stop distance must be 0 km.',
             ]);
         }
 
         /*
-         |--------------------------------------------------------------------------
-         | Validate Stop Order
-         |--------------------------------------------------------------------------
-         */
+        |--------------------------------------------------------------------------
+        | Road Way Distance Order
+        |--------------------------------------------------------------------------
+        */
 
         $previousDistance = -1;
 
@@ -480,33 +517,24 @@ class OperatorRouteController extends Controller
             $stops as $index => $stop
         ) {
             if (
-                $stop[
-                    'distance_from_origin'
-                ] <= $previousDistance
+                $stop['distance_from_origin'] <=
+                $previousDistance
             ) {
                 throw ValidationException::withMessages([
                     "stops.$index.distance_from_origin" =>
-                        'Stop distances must increase in route order.',
+                        'Stop distances must increase in road-way order.',
                 ]);
             }
 
             $previousDistance =
-                $stop[
-                    'distance_from_origin'
-                ];
+                $stop['distance_from_origin'];
 
-            /*
-             * Verify Fare Stage exists
-             * in NTC stage_fares table.
-             */
             $stageExists = DB::table(
                 'stage_fares'
             )
                 ->where(
                     'stage_no',
-                    $stop[
-                        'fare_stage_no'
-                    ]
+                    $stop['fare_stage_no']
                 )
                 ->exists();
 
@@ -519,10 +547,10 @@ class OperatorRouteController extends Controller
         }
 
         /*
-         |--------------------------------------------------------------------------
-         | Duplicate Stop Names
-         |--------------------------------------------------------------------------
-         */
+        |--------------------------------------------------------------------------
+        | Duplicate Road Way Stops
+        |--------------------------------------------------------------------------
+        */
 
         $names = $stops
             ->pluck('name')
@@ -539,168 +567,381 @@ class OperatorRouteController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'stops' =>
-                    'The same stop cannot be added more than once.',
+                    'The same road-way stop cannot be added more than once.',
             ]);
         }
 
         /*
-         |--------------------------------------------------------------------------
-         | Duplicate Fare Stage Numbers
-         |--------------------------------------------------------------------------
-         */
+        |--------------------------------------------------------------------------
+        | Duplicate Fare Stage Numbers
+        |--------------------------------------------------------------------------
+        */
 
-        $stageNumbers = $stops
-            ->pluck(
-                'fare_stage_no'
-            );
+        $fareStages = $stops->pluck(
+            'fare_stage_no'
+        );
 
         if (
-            $stageNumbers
-                    ->unique()
-                    ->count() !==
-            $stageNumbers->count()
+            $fareStages->unique()->count() !==
+            $fareStages->count()
         ) {
             throw ValidationException::withMessages([
                 'stops' =>
-                    'The same Fare Stage No cannot be assigned to more than one stop on the same route.',
+                    'The same Fare Stage No cannot be assigned to more than one road-way stop.',
             ]);
         }
+
+        $starting = $this->normalizeBookingPoints(
+            $data['starting_booking_stops']
+        );
+
+        $return = $this->normalizeBookingPoints(
+            $data['return_booking_stops']
+        );
 
         /*
-         |--------------------------------------------------------------------------
-         | Minimum Bookable Stops
-         |--------------------------------------------------------------------------
-         */
+        |--------------------------------------------------------------------------
+        | Validate Starting Direction
+        |--------------------------------------------------------------------------
+        */
 
-        $bookableStops = $stops
-            ->filter(
-                fn ($stop) =>
-                    $stop[
-                        'booking_allowed'
-                    ]
-            );
+        $this->validateBookingPoints(
+            $starting,
+            $stops->all(),
+            'starting'
+        );
 
-        if (
-            $bookableStops->count() < 2
-        ) {
-            throw ValidationException::withMessages([
-                'stops' =>
-                    'At least two passenger booking stops are required.',
-            ]);
-        }
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Return Direction
+        |--------------------------------------------------------------------------
+        */
+
+        $this->validateBookingPoints(
+            $return,
+            $stops->all(),
+            'return'
+        );
 
         $data['stops'] =
             $stops->all();
 
+        $data['starting_booking_stops'] =
+            $starting;
+
+        $data['return_booking_stops'] =
+            $return;
+
         return $data;
     }
 
-    private function saveStops(
+    private function normalizeBookingPoints(
+        array $points
+    ): array {
+        return collect($points)
+            ->map(function ($point) {
+                return [
+                    'road_stop_index' =>
+                        (int) $point[
+                            'road_stop_index'
+                        ],
+
+                    'schedule_time' =>
+                        trim(
+                            (string) $point[
+                                'schedule_time'
+                            ]
+                        ),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    private function validateBookingPoints(
+        array $points,
+        array $roadStops,
+        string $direction
+    ): void {
+        $maximumIndex =
+            count($roadStops) - 1;
+
+        $usedIndexes = [];
+
+        $previousIndex =
+            $direction === 'starting'
+                ? -1
+                : count($roadStops);
+
+        foreach (
+            $points as $index => $point
+        ) {
+            $roadIndex =
+                $point['road_stop_index'];
+
+            if (
+                $roadIndex < 0 ||
+                $roadIndex > $maximumIndex
+            ) {
+                throw ValidationException::withMessages([
+                    "{$direction}_booking_stops.$index.road_stop_index" =>
+                        'The selected booking point is not a valid road-way stop.',
+                ]);
+            }
+
+            if (
+                in_array(
+                    $roadIndex,
+                    $usedIndexes,
+                    true
+                )
+            ) {
+                throw ValidationException::withMessages([
+                    "{$direction}_booking_stops.$index.road_stop_index" =>
+                        'The same booking stop cannot be selected more than once.',
+                ]);
+            }
+
+            /*
+             * Starting direction:
+             * Road stop indexes must increase.
+             *
+             * Return direction:
+             * Road stop indexes must decrease.
+             */
+            if (
+                $direction === 'starting' &&
+                $roadIndex <= $previousIndex
+            ) {
+                throw ValidationException::withMessages([
+                    "{$direction}_booking_stops.$index.road_stop_index" =>
+                        'Starting booking stops must follow the road-way order.',
+                ]);
+            }
+
+            if (
+                $direction === 'return' &&
+                $roadIndex >= $previousIndex
+            ) {
+                throw ValidationException::withMessages([
+                    "{$direction}_booking_stops.$index.road_stop_index" =>
+                        'Return booking stops must follow the reverse road-way order.',
+                ]);
+            }
+
+            $usedIndexes[] =
+                $roadIndex;
+
+            $previousIndex =
+                $roadIndex;
+        }
+
+        /*
+         * Starting must begin from route origin
+         * and end at route destination.
+         */
+        if ($direction === 'starting') {
+            if (
+                $points[0]['road_stop_index'] !== 0
+            ) {
+                throw ValidationException::withMessages([
+                    'starting_booking_stops' =>
+                        'Starting schedule must begin at the route origin.',
+                ]);
+            }
+
+            if (
+                $points[
+                    count($points) - 1
+                ]['road_stop_index'] !==
+                $maximumIndex
+            ) {
+                throw ValidationException::withMessages([
+                    'starting_booking_stops' =>
+                        'Starting schedule must end at the route destination.',
+                ]);
+            }
+        }
+
+        /*
+         * Return must begin from destination
+         * and finish at route origin.
+         */
+        if ($direction === 'return') {
+            if (
+                $points[0]['road_stop_index'] !==
+                $maximumIndex
+            ) {
+                throw ValidationException::withMessages([
+                    'return_booking_stops' =>
+                        'Return schedule must begin at the route destination.',
+                ]);
+            }
+
+            if (
+                $points[
+                    count($points) - 1
+                ]['road_stop_index'] !== 0
+            ) {
+                throw ValidationException::withMessages([
+                    'return_booking_stops' =>
+                        'Return schedule must end at the route origin.',
+                ]);
+            }
+        }
+    }
+
+    private function saveRoadStops(
         int $routeId,
         array $stops
-    ): void {
+    ): array {
+        $ids = [];
+
         foreach (
             $stops as $index => $stop
         ) {
             $row = [
-                'route_id' =>
-                    $routeId,
-
-                'name' =>
-                    $stop['name'],
-
-                'stop_order' =>
-                    $index + 1,
-
+                'route_id' => $routeId,
+                'name' => $stop['name'],
+                'stop_order' => $index + 1,
                 'fare_stage_no' =>
-                    $stop[
-                        'fare_stage_no'
-                    ],
-
+                    $stop['fare_stage_no'],
                 'distance_from_origin' =>
-                    $stop[
-                        'distance_from_origin'
-                    ],
-
-                /*
-                 * Latitude / Longitude
-                 * are not manually entered.
-                 */
+                    $stop['distance_from_origin'],
                 'latitude' => null,
                 'longitude' => null,
-
-                /*
-                 * One Booking Allowed switch
-                 * controls both boarding
-                 * and drop-off.
-                 */
-                'boarding_allowed' =>
-                    $stop[
-                        'booking_allowed'
-                    ],
-
-                'dropoff_allowed' =>
-                    $stop[
-                        'booking_allowed'
-                    ],
-
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
 
             /*
-             * Save timetable fields only
-             * when these columns exist.
+             * Existing old columns are retained
+             * only for DB compatibility.
              */
             if (
                 Schema::hasColumn(
                     'route_stops',
-                    'starting_time'
+                    'booking_radius_km'
                 )
             ) {
-                $row['starting_time'] =
-                    $stop[
-                        'booking_allowed'
-                    ]
-                        ? $stop[
-                            'starting_time'
-                        ]
-                        : null;
+                $row['booking_radius_km'] = 0;
             }
 
             if (
                 Schema::hasColumn(
                     'route_stops',
-                    'return_time'
+                    'boarding_allowed'
                 )
             ) {
-                $row['return_time'] =
-                    $stop[
-                        'booking_allowed'
-                    ]
-                        ? $stop[
-                            'return_time'
-                        ]
-                        : null;
+                $row['boarding_allowed'] = false;
             }
 
             if (
                 Schema::hasColumn(
                     'route_stops',
-                    'booking_radius_km'
+                    'dropoff_allowed'
                 )
             ) {
-                $row[
-                    'booking_radius_km'
-                ] = 0;
+                $row['dropoff_allowed'] = false;
             }
+
+            $ids[$index] =
+                DB::table('route_stops')
+                    ->insertGetId($row);
+        }
+
+        return $ids;
+    }
+
+    private function saveBookingStops(
+        int $routeId,
+        string $direction,
+        array $bookingPoints,
+        array $roadStops,
+        array $roadStopIds
+    ): void {
+        foreach (
+            $bookingPoints as $index => $point
+        ) {
+            $roadIndex =
+                $point['road_stop_index'];
+
+            $roadStop =
+                $roadStops[$roadIndex];
 
             DB::table(
-                'route_stops'
-            )->insert(
-                $row
-            );
+                'route_booking_stops'
+            )->insert([
+                'route_id' => $routeId,
+
+                'route_stop_id' =>
+                    $roadStopIds[$roadIndex],
+
+                'direction' => $direction,
+
+                'stop_order' =>
+                    $index + 1,
+
+                'schedule_time' =>
+                    $point['schedule_time'],
+
+                /*
+                 * These are copied automatically
+                 * from the full Road Way stop.
+                 */
+                'fare_stage_no' =>
+                    $roadStop['fare_stage_no'],
+
+                'distance_from_origin' =>
+                    $roadStop[
+                        'distance_from_origin'
+                    ],
+
+                'boarding_allowed' => true,
+
+                'dropoff_allowed' => true,
+
+                'is_active' => true,
+
+                'created_at' => now(),
+
+                'updated_at' => now(),
+            ]);
         }
+    }
+
+    private function bookingStopsForEdit(
+        int $routeId,
+        string $direction
+    ) {
+        return DB::table(
+            'route_booking_stops'
+        )
+            ->join(
+                'route_stops',
+                'route_stops.id',
+                '=',
+                'route_booking_stops.route_stop_id'
+            )
+            ->where(
+                'route_booking_stops.route_id',
+                $routeId
+            )
+            ->where(
+                'route_booking_stops.direction',
+                $direction
+            )
+            ->orderBy(
+                'route_booking_stops.stop_order'
+            )
+            ->select(
+                'route_booking_stops.*',
+                'route_stops.name as stop_name',
+                'route_stops.stop_order as road_stop_order',
+                'route_stops.fare_stage_no as road_fare_stage_no',
+                'route_stops.distance_from_origin as road_distance'
+            )
+            ->get();
     }
 
     private function operatorId(

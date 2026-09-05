@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class RouteStop extends Model
 {
@@ -11,32 +13,92 @@ class RouteStop extends Model
         'name',
         'stop_order',
         'fare_stage_no',
+        'distance_from_origin',
         'latitude',
         'longitude',
-        'distance_from_origin',
         'booking_radius_km',
-        'boarding_allowed',
-        'dropoff_allowed',
     ];
 
     protected $casts = [
         'stop_order' => 'integer',
         'fare_stage_no' => 'integer',
+        'distance_from_origin' => 'decimal:2',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
-        'distance_from_origin' => 'decimal:2',
         'booking_radius_km' => 'decimal:2',
-        'boarding_allowed' => 'boolean',
-        'dropoff_allowed' => 'boolean',
     ];
 
-    public function route()
+    /*
+    |--------------------------------------------------------------------------
+    | Route
+    |--------------------------------------------------------------------------
+    */
+
+    public function route(): BelongsTo
     {
-        return $this->belongsTo(Route::class);
+        return $this->belongsTo(
+            Route::class,
+        );
     }
 
-    public function fixedServiceStops()
+    /*
+    |--------------------------------------------------------------------------
+    | Route Booking Stops
+    |--------------------------------------------------------------------------
+    |
+    | A road-way stop can be selected as a booking point for
+    | Starting direction, Return direction, or both.
+    |
+    */
+
+    public function bookingStops(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class);
+        return $this->hasMany(
+            RouteBookingStop::class,
+        );
+    }
+
+    public function startingBookingStops(): HasMany
+    {
+        return $this->hasMany(
+            RouteBookingStop::class,
+        )
+            ->where(
+                'direction',
+                'starting',
+            )
+            ->orderBy(
+                'stop_order',
+            );
+    }
+
+    public function returnBookingStops(): HasMany
+    {
+        return $this->hasMany(
+            RouteBookingStop::class,
+        )
+            ->where(
+                'direction',
+                'return',
+            )
+            ->orderBy(
+                'stop_order',
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Fixed Service Stops
+    |--------------------------------------------------------------------------
+    |
+    | Kept for the existing fixed timetable-only service feature.
+    |
+    */
+
+    public function fixedServiceStops(): HasMany
+    {
+        return $this->hasMany(
+            FixedServiceStop::class,
+        );
     }
 }

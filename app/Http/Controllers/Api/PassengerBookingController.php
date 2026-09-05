@@ -24,19 +24,25 @@ class PassengerBookingController extends Controller
 
         $term = trim((string) ($data['search'] ?? ''));
 
-        $query = DB::table('route_stops')
-            ->select('name')
+        $query = DB::table('route_booking_stops')
+            ->join('route_stops', 'route_stops.id', '=', 'route_booking_stops.route_stop_id')
+            ->where('route_booking_stops.is_active', true)
+            ->select('route_stops.name')
             ->distinct();
 
         if ($term !== '') {
-            $query->where('name', 'like', $term . '%');
+            $query->where('route_stops.name', 'like', $term . '%');
         }
 
         return response()->json([
             'success' => true,
-            'locations' => $query->orderBy('name')->limit(30)->get(),
+            'locations' => $query
+                ->orderBy('route_stops.name')
+                ->limit(30)
+                ->get(),
         ]);
     }
+
 
     public function searchTrips(Request $request)
     {
@@ -56,24 +62,32 @@ class PassengerBookingController extends Controller
             ->whereDate('trips.service_date', $date)
             ->when(
                 $date === today()->toDateString(),
-                fn ($query) => $query->whereTime('trips.departure_time', '>', now()->format('H:i:s'))
+                fn ($query) => $query->whereTime(
+                    'trips.departure_time',
+                    '>',
+                    now()->format('H:i:s')
+                )
             )
             ->orderBy('trips.departure_time')
             ->get();
 
         $matches = $trips->map(function ($trip) use ($origin, $destination) {
-            $stops = $this->orderedStopsForTrip($trip);
+            $bookingStops = $this->bookingStopsForTrip($trip);
 
-            if ($stops->isEmpty()) {
+            if ($bookingStops->isEmpty()) {
                 return null;
             }
 
-            $boarding = $stops->first(
-                fn ($stop) => $this->sameStopName($stop->name, $origin) && (bool) $stop->boarding_allowed
+            $boarding = $bookingStops->first(
+                fn ($stop) =>
+                    $this->sameStopName($stop->name, $origin)
+                    && (bool) $stop->boarding_allowed
             );
 
-            $dropoff = $stops->first(
-                fn ($stop) => $this->sameStopName($stop->name, $destination) && (bool) $stop->dropoff_allowed
+            $dropoff = $bookingStops->first(
+                fn ($stop) =>
+                    $this->sameStopName($stop->name, $destination)
+                    && (bool) $stop->dropoff_allowed
             );
 
             if (!$boarding || !$dropoff) {
@@ -90,13 +104,36 @@ class PassengerBookingController extends Controller
                 return null;
             }
 
+            $fareStageDifference = abs(
+                (int) $dropoff->fare_stage_no
+                - (int) $boarding->fare_stage_no
+            );
+
+            if ($fareStageDifference < 1) {
+                return null;
+            }
+
+            $segmentFare = $this->calculateStageFare(
+                $trip,
+                $boarding,
+                $dropoff
+            );
+
+            if ($segmentFare === null) {
+                return null;
+            }
+
             $trip->requested_origin = $boarding->name;
             $trip->requested_destination = $dropoff->name;
             $trip->boarding_stop = $boarding->name;
             $trip->dropoff_stop = $dropoff->name;
+            $trip->boarding_time = $boarding->schedule_time;
+            $trip->dropoff_time = $dropoff->schedule_time;
             $trip->journey_distance_km = round($journeyDistance, 2);
             $trip->minimum_journey_km = self::MIN_JOURNEY_KM;
-            $trip->segment_fare = $this->calculateSegmentFare($trip, $journeyDistance);
+            $trip->fare_stage_difference = $fareStageDifference;
+            $trip->segment_fare = $segmentFare;
+            $trip->fare = $segmentFare;
             $trip->booking_available = $this->isTripBookable($trip);
 
             if ($this->isReturnTrip($trip)) {
@@ -106,7 +143,9 @@ class PassengerBookingController extends Controller
             }
 
             return $trip;
-        })->filter()->values();
+        })
+            ->filter()
+            ->values();
 
         return response()->json([
             'success' => true,
@@ -115,9 +154,12 @@ class PassengerBookingController extends Controller
         ]);
     }
 
+
     public function tripDetails($id)
     {
-        $trip = $this->tripQuery()->where('trips.id', $id)->first();
+        $trip = $this->tripQuery()
+            ->where('trips.id', $id)
+            ->first();
 
         if (!$trip) {
             return response()->json([
@@ -126,7 +168,31 @@ class PassengerBookingController extends Controller
             ], 404);
         }
 
-        $stops = $this->orderedStopsForTrip($trip);
+        $roadWay = $this->roadWayForRoute((int) $trip->route_id);
+
+        $startingSchedule = $this->bookingScheduleForRoute(
+            (int) $trip->route_id,
+            'starting'
+        );
+
+        $returnSchedule = $this->bookingScheduleForRoute(
+            (int) $trip->route_id,
+            'return'
+        );
+
+        $bookableStops = $this->bookingStopsForTrip($trip)
+            ->map(fn ($stop) => [
+                'route_booking_stop_id' => $stop->id,
+                'route_stop_id' => $stop->route_stop_id,
+                'name' => $stop->name,
+                'stop_order' => $stop->_journey_order,
+                'schedule_time' => $stop->schedule_time,
+                'fare_stage_no' => (int) $stop->fare_stage_no,
+                'distance_from_origin' => (float) $stop->distance_from_origin,
+                'boarding_allowed' => (bool) $stop->boarding_allowed,
+                'dropoff_allowed' => (bool) $stop->dropoff_allowed,
+            ])
+            ->values();
 
         if ($this->isReturnTrip($trip)) {
             $originalOrigin = $trip->origin;
@@ -137,11 +203,15 @@ class PassengerBookingController extends Controller
         return response()->json([
             'success' => true,
             'trip' => $trip,
-            'stops' => $stops,
+            'road_way' => $roadWay,
+            'starting_schedule' => $startingSchedule,
+            'return_schedule' => $returnSchedule,
+            'bookable_stops' => $bookableStops,
             'booking_available' => $this->isTripBookable($trip),
             'minimum_journey_km' => self::MIN_JOURNEY_KM,
         ]);
     }
+
 
     public function bookings(Request $request)
     {
@@ -186,6 +256,23 @@ class PassengerBookingController extends Controller
 
             $booking->seats = $this->decodeSeatNumbers($booking->seat_numbers ?? '');
 
+            $journeyMeta = $this->bookingJourneyMeta($booking);
+
+            $booking->boarding_time =
+                $booking->boarding_time ?? $journeyMeta['boarding_time'];
+
+            $booking->dropoff_time =
+                $booking->dropoff_time ?? $journeyMeta['dropoff_time'];
+
+            $booking->fare_stage_difference =
+                $booking->fare_stage_difference ?? $journeyMeta['fare_stage_difference'];
+
+            $booking->journey_distance_km =
+                $booking->journey_distance_km ?? $journeyMeta['journey_distance_km'];
+
+            $booking->fare_per_seat =
+                $booking->fare_per_seat ?? $journeyMeta['fare_per_seat'];
+
             $booking->feedback_submitted = Schema::hasTable('trip_feedback')
                 ? DB::table('trip_feedback')
                     ->where('booking_id', $booking->id)
@@ -214,17 +301,29 @@ class PassengerBookingController extends Controller
             'trip_id' => ['required', 'integer', 'exists:trips,id'],
             'origin' => ['required', 'string', 'max:120'],
             'destination' => ['required', 'string', 'max:120', 'different:origin'],
+            'boarding_stop' => ['nullable', 'string', 'max:120'],
+            'dropoff_stop' => ['nullable', 'string', 'max:120'],
             'seat_numbers' => ['required', 'array', 'min:1', 'max:' . self::MAX_SEATS],
             'seat_numbers.*' => ['required', 'string', 'max:20'],
             'primary_passenger_name' => ['required', 'string', 'max:150'],
-            'primary_passenger_nic' => ['required', 'string', 'regex:/^([0-9]{9}[VvXx]|[0-9]{12})$/'],
-            'phone' => ['nullable', 'string', 'regex:/^\+94[0-9]{9}$/'],
+            'primary_passenger_nic' => [
+                'required',
+                'string',
+                'regex:/^([0-9]{9}[VvXx]|[0-9]{12})$/',
+            ],
+            'phone' => [
+                'nullable',
+                'string',
+                'regex:/^(?:\+94|0)7[0-9]{8}$/',
+            ],
             'travellers' => ['required', 'array', 'min:1', 'max:' . self::MAX_SEATS],
             'travellers.*.seat_number' => ['required', 'string', 'max:20'],
             'travellers.*.gender' => ['required', 'in:male,female'],
         ], [
-            'primary_passenger_nic.regex' => 'Enter a valid Sri Lankan NIC number.',
-            'phone.regex' => 'Phone number must use Sri Lankan international format +94XXXXXXXXX.',
+            'primary_passenger_nic.regex' =>
+                'Enter a valid Sri Lankan NIC number.',
+            'phone.regex' =>
+                'Phone number must use +947XXXXXXXX or 07XXXXXXXX.',
         ]);
 
         $seatNumbers = collect($data['seat_numbers'])
@@ -235,192 +334,279 @@ class PassengerBookingController extends Controller
 
         if ($seatNumbers->count() !== count($data['seat_numbers'])) {
             throw ValidationException::withMessages([
-                'seat_numbers' => 'Duplicate or invalid seats were selected.',
+                'seat_numbers' =>
+                    'Duplicate or invalid seats were selected.',
             ]);
         }
 
-        $travellers = collect($data['travellers'])->map(fn ($row) => [
-            'seat_number' => $this->normalizeSeatNumber($row['seat_number']),
-            'name' => trim((string) $row['name']),
-            'gender' => strtolower(trim((string) $row['gender'])),
-        ]);
+        $travellers = collect($data['travellers'])
+            ->map(fn ($row) => [
+                'seat_number' =>
+                    $this->normalizeSeatNumber($row['seat_number']),
+                'gender' =>
+                    strtolower(trim((string) $row['gender'])),
+            ])
+            ->values();
 
         if ($travellers->count() !== $seatNumbers->count()) {
             throw ValidationException::withMessages([
-                'travellers' => 'Passenger details are required for every selected seat.',
+                'travellers' =>
+                    'Seat and gender details are required for every selected seat.',
             ]);
         }
 
-        $travellerSeats = $travellers->pluck('seat_number')->unique()->sort()->values();
-        $selectedSeats = $seatNumbers->sort()->values();
+        $travellerSeats = $travellers
+            ->pluck('seat_number')
+            ->unique()
+            ->sort()
+            ->values();
+
+        $selectedSeats = $seatNumbers
+            ->sort()
+            ->values();
 
         if ($travellerSeats->all() !== $selectedSeats->all()) {
             throw ValidationException::withMessages([
-                'travellers' => 'Passenger details must match all selected seats.',
+                'travellers' =>
+                    'Traveller seat details must match all selected seats.',
             ]);
         }
 
-        $booking = DB::transaction(function () use ($passenger, $data, $seatNumbers, $travellers) {
-            $trip = DB::table('trips')
-                ->join('buses', 'buses.id', '=', 'trips.bus_id')
-                ->where('trips.id', $data['trip_id'])
-                ->select('trips.*', 'buses.seat_count')
-                ->lockForUpdate()
-                ->first();
+        $booking = DB::transaction(
+            function () use ($passenger, $data, $seatNumbers, $travellers) {
+                $trip = DB::table('trips')
+                    ->join('buses', 'buses.id', '=', 'trips.bus_id')
+                    ->where('trips.id', $data['trip_id'])
+                    ->select(
+                        'trips.*',
+                        'buses.seat_count',
+                        'buses.bus_type'
+                    )
+                    ->lockForUpdate()
+                    ->first();
 
-            if (!$trip) {
-                abort(404, 'Trip not found.');
-            }
-
-            if (!$this->isTripBookable($trip)) {
-                throw ValidationException::withMessages([
-                    'trip_id' => 'This trip is no longer available for booking.',
-                ]);
-            }
-
-            $stops = $this->orderedStopsForTrip($trip);
-            $boarding = $stops->first(
-                fn ($stop) => $this->sameStopName($stop->name, $data['origin']) && (bool) $stop->boarding_allowed
-            );
-            $dropoff = $stops->first(
-                fn ($stop) => $this->sameStopName($stop->name, $data['destination']) && (bool) $stop->dropoff_allowed
-            );
-
-            if (!$boarding || !$dropoff || (int) $boarding->_journey_order >= (int) $dropoff->_journey_order) {
-                throw ValidationException::withMessages([
-                    'route' => 'Selected boarding and dropping stops are not valid for this trip direction.',
-                ]);
-            }
-
-            $journeyDistance = $this->journeyDistance($boarding, $dropoff);
-
-            if ($journeyDistance < self::MIN_JOURNEY_KM) {
-                throw ValidationException::withMessages([
-                    'destination' => 'The minimum booking distance is ' . self::MIN_JOURNEY_KM . ' km.',
-                ]);
-            }
-
-            $validSeats = DB::table('seats')
-                ->where('bus_id', $trip->bus_id)
-                ->whereIn('seat_number', $seatNumbers->all())
-                ->where('is_disabled', false)
-                ->pluck('seat_number')
-                ->map(fn ($seat) => $this->normalizeSeatNumber($seat))
-                ->unique()
-                ->values();
-
-            if ($validSeats->count() !== $seatNumbers->count()) {
-                throw ValidationException::withMessages([
-                    'seat_numbers' => 'One or more selected seats are invalid or unavailable.',
-                ]);
-            }
-
-            $alreadyBooked = $this->activeReservedSeatsQuery($trip->id)
-                ->whereIn('booking_passengers.seat_number', $seatNumbers->all())
-                ->pluck('booking_passengers.seat_number')
-                ->map(fn ($seat) => $this->normalizeSeatNumber($seat))
-                ->unique()
-                ->values();
-
-            if ($alreadyBooked->isNotEmpty()) {
-                throw ValidationException::withMessages([
-                    'seat_numbers' => 'Seat(s) already booked: ' . $alreadyBooked->implode(', '),
-                ]);
-            }
-
-            $farePerSeat = $this->calculateSegmentFare($trip, $journeyDistance);
-            $count = $seatNumbers->count();
-            $subtotal = round($farePerSeat * $count, 2);
-            $discount = 0.00;
-            $total = round($subtotal - $discount, 2);
-            $reference = $this->uniqueBookingReference();
-
-            $row = [
-                'trip_id' => $trip->id,
-                'passenger_user_id' => $passenger->id,
-                'booking_reference' => $reference,
-                'seat_numbers' => json_encode($seatNumbers->all()),
-                'passenger_count' => $count,
-                'subtotal' => $subtotal,
-                'discount' => $discount,
-                'total' => $total,
-                'payment_status' => 'pending',
-                'status' => 'pending',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ];
-
-            $optionalBookingColumns = [
-                'primary_passenger_name' => trim($data['primary_passenger_name']),
-                'primary_passenger_nic' => strtoupper(trim($data['primary_passenger_nic'])),
-                'phone' => $data['phone'] ?? null,
-                'boarding_stop' => $boarding->name,
-                'dropoff_stop' => $dropoff->name,
-                'journey_distance_km' => round($journeyDistance, 2),
-                'fare_per_seat' => $farePerSeat,
-            ];
-
-            foreach ($optionalBookingColumns as $column => $value) {
-                if (Schema::hasColumn('bookings', $column)) {
-                    $row[$column] = $value;
+                if (!$trip) {
+                    abort(404, 'Trip not found.');
                 }
-            }
 
-            if (Schema::hasColumn('bookings', 'hold_expires_at')) {
-                $row['hold_expires_at'] = now()->addMinutes(self::HOLD_MINUTES);
-            }
+                if (!$this->isTripBookable($trip)) {
+                    throw ValidationException::withMessages([
+                        'trip_id' =>
+                            'This trip is no longer available for booking.',
+                    ]);
+                }
 
-            $bookingId = DB::table('bookings')->insertGetId($row);
+                $bookingStops = $this->bookingStopsForTrip($trip);
 
-            foreach ($travellers as $traveller) {
-                $passengerRow = [
-                    'booking_id' => $bookingId,
-                    'seat_number' => $traveller['seat_number'],
+                $originName = trim((string) ($data['boarding_stop'] ?? $data['origin']));
+                $destinationName = trim((string) ($data['dropoff_stop'] ?? $data['destination']));
+
+                $boarding = $bookingStops->first(
+                    fn ($stop) =>
+                        $this->sameStopName($stop->name, $originName)
+                        && (bool) $stop->boarding_allowed
+                );
+
+                $dropoff = $bookingStops->first(
+                    fn ($stop) =>
+                        $this->sameStopName($stop->name, $destinationName)
+                        && (bool) $stop->dropoff_allowed
+                );
+
+                if (
+                    !$boarding
+                    || !$dropoff
+                    || (int) $boarding->_journey_order >= (int) $dropoff->_journey_order
+                ) {
+                    throw ValidationException::withMessages([
+                        'route' =>
+                            'Selected boarding and drop-off stops are not valid for this trip direction.',
+                    ]);
+                }
+
+                $journeyDistance = $this->journeyDistance($boarding, $dropoff);
+
+                if ($journeyDistance < self::MIN_JOURNEY_KM) {
+                    throw ValidationException::withMessages([
+                        'destination' =>
+                            'The minimum online-booking distance is '
+                            . self::MIN_JOURNEY_KM
+                            . ' km.',
+                    ]);
+                }
+
+                $fareStageDifference = abs(
+                    (int) $dropoff->fare_stage_no
+                    - (int) $boarding->fare_stage_no
+                );
+
+                if ($fareStageDifference < 1) {
+                    throw ValidationException::withMessages([
+                        'route' =>
+                            'Invalid NTC Fare Stage difference for the selected journey.',
+                    ]);
+                }
+
+                $farePerSeat = $this->calculateStageFare(
+                    $trip,
+                    $boarding,
+                    $dropoff
+                );
+
+                if ($farePerSeat === null) {
+                    throw ValidationException::withMessages([
+                        'route' =>
+                            'NTC fare is not available for the selected journey and bus type.',
+                    ]);
+                }
+
+                $validSeats = DB::table('seats')
+                    ->where('bus_id', $trip->bus_id)
+                    ->whereIn('seat_number', $seatNumbers->all())
+                    ->where('is_disabled', false)
+                    ->pluck('seat_number')
+                    ->map(fn ($seat) => $this->normalizeSeatNumber($seat))
+                    ->unique()
+                    ->values();
+
+                if ($validSeats->count() !== $seatNumbers->count()) {
+                    throw ValidationException::withMessages([
+                        'seat_numbers' =>
+                            'One or more selected seats are invalid or unavailable.',
+                    ]);
+                }
+
+                $alreadyBooked = $this->activeReservedSeatsQuery((int) $trip->id)
+                    ->whereIn(
+                        'booking_passengers.seat_number',
+                        $seatNumbers->all()
+                    )
+                    ->pluck('booking_passengers.seat_number')
+                    ->map(fn ($seat) => $this->normalizeSeatNumber($seat))
+                    ->unique()
+                    ->values();
+
+                if ($alreadyBooked->isNotEmpty()) {
+                    throw ValidationException::withMessages([
+                        'seat_numbers' =>
+                            'Seat(s) already booked: '
+                            . $alreadyBooked->implode(', '),
+                    ]);
+                }
+
+                $count = $seatNumbers->count();
+                $subtotal = round($farePerSeat * $count, 2);
+                $discount = 0.00;
+                $total = round($subtotal - $discount, 2);
+                $reference = $this->uniqueBookingReference();
+
+                $row = [
+                    'trip_id' => $trip->id,
+                    'passenger_user_id' => $passenger->id,
+                    'booking_reference' => $reference,
+                    'seat_numbers' => json_encode($seatNumbers->all()),
+                    'passenger_count' => $count,
+                    'subtotal' => $subtotal,
+                    'discount' => $discount,
+                    'total' => $total,
+                    'payment_status' => 'pending',
+                    'status' => 'pending',
                     'created_at' => now(),
                     'updated_at' => now(),
                 ];
 
-                if (Schema::hasColumn('booking_passengers', 'passenger_name')) {
-                    $passengerRow['passenger_name'] = $traveller['name'];
-                } elseif (Schema::hasColumn('booking_passengers', 'name')) {
-                    $passengerRow['name'] = $traveller['name'];
+                $optionalBookingColumns = [
+                    'primary_passenger_name' =>
+                        trim($data['primary_passenger_name']),
+                    'primary_passenger_nic' =>
+                        strtoupper(trim($data['primary_passenger_nic'])),
+                    'phone' =>
+                        $data['phone'] ?? null,
+                    'boarding_stop' =>
+                        $boarding->name,
+                    'dropoff_stop' =>
+                        $dropoff->name,
+                    'journey_distance_km' =>
+                        round($journeyDistance, 2),
+                    'fare_per_seat' =>
+                        $farePerSeat,
+                    'boarding_time' =>
+                        $boarding->schedule_time,
+                    'dropoff_time' =>
+                        $dropoff->schedule_time,
+                    'fare_stage_difference' =>
+                        $fareStageDifference,
+                ];
+
+                foreach ($optionalBookingColumns as $column => $value) {
+                    if (Schema::hasColumn('bookings', $column)) {
+                        $row[$column] = $value;
+                    }
                 }
 
-                if (Schema::hasColumn('booking_passengers', 'gender')) {
-                    $passengerRow['gender'] = $traveller['gender'];
+                if (Schema::hasColumn('bookings', 'hold_expires_at')) {
+                    $row['hold_expires_at'] =
+                        now()->addMinutes(self::HOLD_MINUTES);
                 }
 
-                if (Schema::hasColumn('booking_passengers', 'checked_in_at')) {
-                    $passengerRow['checked_in_at'] = null;
+                $bookingId = DB::table('bookings')->insertGetId($row);
+
+                foreach ($travellers as $traveller) {
+                    $passengerRow = [
+                        'booking_id' => $bookingId,
+                        'seat_number' => $traveller['seat_number'],
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+
+                    if (Schema::hasColumn('booking_passengers', 'gender')) {
+                        $passengerRow['gender'] = $traveller['gender'];
+                    }
+
+                    if (Schema::hasColumn('booking_passengers', 'checked_in_at')) {
+                        $passengerRow['checked_in_at'] = null;
+                    }
+
+                    if (Schema::hasColumn('booking_passengers', 'checked_in_by_staff_id')) {
+                        $passengerRow['checked_in_by_staff_id'] = null;
+                    }
+
+                    DB::table('booking_passengers')->insert($passengerRow);
                 }
 
-                if (Schema::hasColumn('booking_passengers', 'checked_in_by_staff_id')) {
-                    $passengerRow['checked_in_by_staff_id'] = null;
-                }
-
-                DB::table('booking_passengers')->insert($passengerRow);
-            }
-
-            return (object) [
-                'id' => $bookingId,
-                'reference' => $reference,
-                'seat_numbers' => $seatNumbers->all(),
-                'passenger_count' => $count,
-                'subtotal' => $subtotal,
-                'discount' => $discount,
-                'total' => $total,
-                'fare_per_seat' => $farePerSeat,
-                'journey_distance_km' => round($journeyDistance, 2),
-            ];
-        }, 3);
+                return (object) [
+                    'id' => $bookingId,
+                    'reference' => $reference,
+                    'seat_numbers' => $seatNumbers->all(),
+                    'passenger_count' => $count,
+                    'subtotal' => $subtotal,
+                    'discount' => $discount,
+                    'total' => $total,
+                    'fare_per_seat' => $farePerSeat,
+                    'fare_stage_difference' => $fareStageDifference,
+                    'journey_distance_km' => round($journeyDistance, 2),
+                    'boarding_stop' => $boarding->name,
+                    'dropoff_stop' => $dropoff->name,
+                    'boarding_time' => $boarding->schedule_time,
+                    'dropoff_time' => $dropoff->schedule_time,
+                ];
+            },
+            3
+        );
 
         return response()->json([
             'success' => true,
-            'message' => 'Seats held for 10 minutes. Complete card payment to confirm the booking.',
+            'message' =>
+                'Seats held for 10 minutes. Complete card payment to confirm the booking.',
             'booking_id' => $booking->id,
             'booking_reference' => $booking->reference,
             'seat_numbers' => $booking->seat_numbers,
             'passenger_count' => $booking->passenger_count,
+            'boarding_stop' => $booking->boarding_stop,
+            'dropoff_stop' => $booking->dropoff_stop,
+            'boarding_time' => $booking->boarding_time,
+            'dropoff_time' => $booking->dropoff_time,
+            'fare_stage_difference' => $booking->fare_stage_difference,
             'fare_per_seat' => $booking->fare_per_seat,
             'journey_distance_km' => $booking->journey_distance_km,
             'subtotal' => $booking->subtotal,
@@ -431,6 +617,7 @@ class PassengerBookingController extends Controller
             'hold_minutes' => self::HOLD_MINUTES,
         ], 201);
     }
+
 
     public function availableSeats($id)
     {
@@ -498,7 +685,7 @@ class PassengerBookingController extends Controller
                 'bus_name' => $trip->bus_name,
                 'bus_type' => $trip->bus_type,
                 'seat_count' => $trip->seat_count,
-                'fare' => $trip->fare,
+                'fare' => null,
                 'status' => $trip->status,
                 'service_date' => $trip->service_date,
                 'departure_time' => $trip->departure_time,
@@ -693,6 +880,7 @@ class PassengerBookingController extends Controller
                 'routes.destination',
                 'buses.bus_number',
                 'buses.bus_name',
+                'buses.bus_type',
                 'operators.company_name as operator_name'
             )
             ->first();
@@ -726,6 +914,8 @@ class PassengerBookingController extends Controller
             ? $booking->ticket_token
             : hash('sha256', $booking->booking_reference . '|' . $booking->id);
 
+        $journeyMeta = $this->bookingJourneyMeta($booking);
+
         return response()->json([
             'success' => true,
             'ticket' => [
@@ -743,8 +933,16 @@ class PassengerBookingController extends Controller
                 'primary_passenger_nic' => $booking->primary_passenger_nic ?? null,
                 'boarding_stop' => $booking->boarding_stop ?? $booking->origin,
                 'dropoff_stop' => $booking->dropoff_stop ?? $booking->destination,
-                'journey_distance_km' => $booking->journey_distance_km ?? null,
-                'fare_per_seat' => $booking->fare_per_seat ?? null,
+                'boarding_time' =>
+                    $booking->boarding_time ?? $journeyMeta['boarding_time'],
+                'dropoff_time' =>
+                    $booking->dropoff_time ?? $journeyMeta['dropoff_time'],
+                'journey_distance_km' =>
+                    $booking->journey_distance_km ?? $journeyMeta['journey_distance_km'],
+                'fare_stage_difference' =>
+                    $booking->fare_stage_difference ?? $journeyMeta['fare_stage_difference'],
+                'fare_per_seat' =>
+                    $booking->fare_per_seat ?? $journeyMeta['fare_per_seat'],
                 'total' => $booking->total,
                 'payment_status' => $booking->payment_status,
                 'booking_status' => $booking->status,
@@ -943,16 +1141,89 @@ class PassengerBookingController extends Controller
             );
     }
 
-    private function orderedStopsForTrip($trip)
+    private function roadWayForRoute(int $routeId)
     {
-        $stops = DB::table('route_stops')
-            ->where('route_id', $trip->route_id)
+        return DB::table('route_stops')
+            ->where('route_id', $routeId)
             ->orderBy('stop_order')
-            ->get();
+            ->get()
+            ->map(fn ($stop) => [
+                'id' => $stop->id,
+                'name' => $stop->name,
+                'stop_order' => (int) $stop->stop_order,
+                'fare_stage_no' => (int) $stop->fare_stage_no,
+                'distance_from_origin' =>
+                    (float) $stop->distance_from_origin,
+            ])
+            ->values();
+    }
 
-        if ($this->isReturnTrip($trip)) {
-            $stops = $stops->reverse()->values();
-        }
+    private function bookingScheduleForRoute(
+        int $routeId,
+        string $direction
+    ) {
+        return DB::table('route_booking_stops')
+            ->join(
+                'route_stops',
+                'route_stops.id',
+                '=',
+                'route_booking_stops.route_stop_id'
+            )
+            ->where('route_booking_stops.route_id', $routeId)
+            ->where('route_booking_stops.direction', $direction)
+            ->where('route_booking_stops.is_active', true)
+            ->orderBy('route_booking_stops.stop_order')
+            ->select(
+                'route_booking_stops.id',
+                'route_booking_stops.route_stop_id',
+                'route_booking_stops.stop_order',
+                'route_booking_stops.schedule_time',
+                'route_booking_stops.fare_stage_no',
+                'route_booking_stops.distance_from_origin',
+                'route_booking_stops.boarding_allowed',
+                'route_booking_stops.dropoff_allowed',
+                'route_stops.name'
+            )
+            ->get()
+            ->map(fn ($stop) => [
+                'id' => $stop->id,
+                'route_stop_id' => $stop->route_stop_id,
+                'name' => $stop->name,
+                'stop_order' => (int) $stop->stop_order,
+                'schedule_time' => $stop->schedule_time,
+                'fare_stage_no' => (int) $stop->fare_stage_no,
+                'distance_from_origin' =>
+                    (float) $stop->distance_from_origin,
+                'boarding_allowed' =>
+                    (bool) $stop->boarding_allowed,
+                'dropoff_allowed' =>
+                    (bool) $stop->dropoff_allowed,
+            ])
+            ->values();
+    }
+
+    private function bookingStopsForTrip($trip)
+    {
+        $direction = $this->isReturnTrip($trip)
+            ? 'return'
+            : 'starting';
+
+        $stops = DB::table('route_booking_stops')
+            ->join(
+                'route_stops',
+                'route_stops.id',
+                '=',
+                'route_booking_stops.route_stop_id'
+            )
+            ->where('route_booking_stops.route_id', $trip->route_id)
+            ->where('route_booking_stops.direction', $direction)
+            ->where('route_booking_stops.is_active', true)
+            ->orderBy('route_booking_stops.stop_order')
+            ->select(
+                'route_booking_stops.*',
+                'route_stops.name'
+            )
+            ->get();
 
         foreach ($stops as $index => $stop) {
             $stop->_journey_order = $index + 1;
@@ -963,34 +1234,166 @@ class PassengerBookingController extends Controller
 
     private function journeyDistance($boarding, $dropoff): float
     {
-        if (
-            $boarding->distance_from_origin_km !== null &&
-            $dropoff->distance_from_origin_km !== null
-        ) {
-            return abs(
-                (float) $dropoff->distance_from_origin_km -
-                (float) $boarding->distance_from_origin_km
-            );
-        }
-
-        return $this->haversine(
-            (float) $boarding->latitude,
-            (float) $boarding->longitude,
-            (float) $dropoff->latitude,
-            (float) $dropoff->longitude
+        return abs(
+            (float) $dropoff->distance_from_origin
+            -
+            (float) $boarding->distance_from_origin
         );
     }
 
-    private function calculateSegmentFare($trip, float $journeyDistance): float
-    {
-        $fullDistance = (float) ($trip->distance_km ?? 0);
-        $fullFare = (float) ($trip->fare ?? $trip->base_fare ?? 0);
+    private function calculateStageFare(
+        $trip,
+        $boarding,
+        $dropoff
+    ): ?float {
+        $boardingStage =
+            (int) ($boarding->fare_stage_no ?? 0);
 
-        if ($fullDistance > 0 && $fullFare > 0) {
-            return round(($fullFare / $fullDistance) * $journeyDistance, 2);
+        $dropoffStage =
+            (int) ($dropoff->fare_stage_no ?? 0);
+
+        if ($boardingStage <= 0 || $dropoffStage <= 0) {
+            return null;
         }
 
-        return round($fullFare, 2);
+        $stageDifference = abs(
+            $dropoffStage - $boardingStage
+        );
+
+        if ($stageDifference < 1) {
+            return null;
+        }
+
+        $serviceClass = $this->serviceClassForBusType(
+            (string) ($trip->bus_type ?? '')
+        );
+
+        if ($serviceClass === null) {
+            return null;
+        }
+
+        $fare = DB::table('stage_fares')
+            ->where('stage_no', $stageDifference)
+            ->where('service_class', $serviceClass)
+            ->value('fare');
+
+        return $fare !== null
+            ? round((float) $fare, 2)
+            : null;
+    }
+
+    private function serviceClassForBusType(
+        string $busType
+    ): ?string {
+        $normalized = mb_strtolower(
+            trim($busType)
+        );
+
+        return match ($normalized) {
+            'normal' =>
+                'normal',
+
+            'semi-luxury',
+            'semi luxury',
+            'semiluxury' =>
+                'semi_luxury',
+
+            'a/c',
+            'ac',
+            'luxury',
+            'air conditioned',
+            'air-conditioned' =>
+                'luxury',
+
+            default =>
+                null,
+        };
+    }
+
+
+
+    private function bookingJourneyMeta($booking): array
+    {
+        $defaults = [
+            'boarding_time' => null,
+            'dropoff_time' => null,
+            'fare_stage_difference' => null,
+            'journey_distance_km' => null,
+            'fare_per_seat' => null,
+        ];
+
+        $boardingName = trim(
+            (string) ($booking->boarding_stop ?? $booking->origin ?? '')
+        );
+
+        $dropoffName = trim(
+            (string) ($booking->dropoff_stop ?? $booking->destination ?? '')
+        );
+
+        if (
+            empty($booking->route_id)
+            || $boardingName === ''
+            || $dropoffName === ''
+        ) {
+            return $defaults;
+        }
+
+        $stops = $this->bookingStopsForTrip($booking);
+
+        $boarding = $stops->first(
+            fn ($stop) =>
+                $this->sameStopName($stop->name, $boardingName)
+        );
+
+        $dropoff = $stops->first(
+            fn ($stop) =>
+                $this->sameStopName($stop->name, $dropoffName)
+        );
+
+        if (!$boarding || !$dropoff) {
+            return $defaults;
+        }
+
+        if (
+            (int) $boarding->_journey_order
+            >=
+            (int) $dropoff->_journey_order
+        ) {
+            return $defaults;
+        }
+
+        $journeyDistance = $this->journeyDistance(
+            $boarding,
+            $dropoff
+        );
+
+        $fareStageDifference = abs(
+            (int) $dropoff->fare_stage_no
+            -
+            (int) $boarding->fare_stage_no
+        );
+
+        $farePerSeat = null;
+
+        if (!empty($booking->bus_type)) {
+            $farePerSeat = $this->calculateStageFare(
+                $booking,
+                $boarding,
+                $dropoff
+            );
+        }
+
+        return [
+            'boarding_time' => $boarding->schedule_time,
+            'dropoff_time' => $dropoff->schedule_time,
+            'fare_stage_difference' =>
+                $fareStageDifference > 0
+                    ? $fareStageDifference
+                    : null,
+            'journey_distance_km' =>
+                round($journeyDistance, 2),
+            'fare_per_seat' => $farePerSeat,
+        ];
     }
 
     private function activeReservedSeatsQuery(int $tripId)

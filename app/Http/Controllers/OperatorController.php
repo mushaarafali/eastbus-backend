@@ -18,6 +18,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class OperatorController extends Controller
 {
@@ -417,123 +418,6 @@ class OperatorController extends Controller
         );
     }
 
-    public function routes()
-    {
-        return view(
-            'operator.routes',
-            [
-                'routes' => $this
-                    ->op()
-                    ->routes()
-                    ->with('stops')
-                    ->latest()
-                    ->get(),
-            ]
-        );
-    }
-
-    public function storeRoute(
-        Request $request
-    ) {
-        $operator = $this->op();
-
-        $data = $request->validate([
-            'name' =>
-                'required|max:150',
-
-            'origin' =>
-                'required|max:100',
-
-            'destination' =>
-                'required|max:100',
-
-            'duration_minutes' =>
-                'nullable|integer|min:1',
-
-            'distance_km' =>
-                'nullable|numeric|min:0',
-
-            'base_fare' =>
-                'required|numeric|min:0',
-        ]);
-
-        $route = $operator
-            ->routes()
-            ->create(
-                $data + [
-                    'is_active' => true,
-                ]
-            );
-
-        Audit::log(
-            'Create route',
-            'Routes',
-            $route->name
-        );
-
-        return back()->with(
-            'success',
-            'Route created.'
-        );
-    }
-
-    public function addStop(
-        Request $request,
-        Route $route
-    ) {
-        $this->own($route);
-
-        $data = $request->validate([
-            'name' =>
-                'required|max:100',
-
-            'stop_order' =>
-                'required|integer|min:1',
-
-            'latitude' =>
-                'nullable|numeric',
-
-            'longitude' =>
-                'nullable|numeric',
-
-            'boarding_allowed' =>
-                'nullable|boolean',
-
-            'dropoff_allowed' =>
-                'nullable|boolean',
-
-            'booking_radius_km' =>
-                'nullable|numeric|min:1|max:50',
-        ]);
-
-        $data['booking_radius_km'] = $data['booking_radius_km'] ?? config('eastbus.booking_radius_km',20);
-
-        $route
-            ->stops()
-            ->create(
-                $data + [
-                    'boarding_allowed' =>
-                        $request->boolean(
-                            'boarding_allowed'
-                        ),
-
-                    'dropoff_allowed' =>
-                        $request->boolean(
-                            'dropoff_allowed'
-                        ),
-                ]
-            );
-
-        if (!empty($data['latitude']) && !empty($data['longitude'])) {
-            DB::table('locations')->updateOrInsert(
-                ['name' => trim($data['name']), 'latitude' => $data['latitude'], 'longitude' => $data['longitude']],
-                ['is_active' => true, 'updated_at' => now(), 'created_at' => now()]
-            );
-        }
-
-        return back()->with('success','Stop added. It is now available to passenger location search.');
-    }
-
     public function trips()
     {
         $operator = $this->op();
@@ -600,71 +484,136 @@ class OperatorController extends Controller
         $operator = $this->op();
 
         $data = $request->validate([
-            'route_id' => 'required|integer',
-            'bus_id' => 'required|integer',
-            'driver_id' => 'nullable|integer',
-            'conductor_id' => 'nullable|integer',
-            'trip_type' => 'required|in:starting,return',
-            'service_date' => 'required|date|after_or_equal:today',
-            'departure_time' => 'required',
-            'arrival_time' => 'nullable',
-            'fare' => 'required|numeric|min:0',
-            'schedule_days' => 'required|integer|in:1,7',
-            'is_published' => 'nullable|boolean',
+            'route_id' => ['required', 'integer'],
+            'bus_id' => ['required', 'integer'],
+            'driver_id' => ['nullable', 'integer'],
+            'conductor_id' => ['nullable', 'integer'],
+            'trip_type' => ['required', 'in:starting,return'],
+            'service_date' => ['required', 'date', 'after_or_equal:today'],
+            'schedule_days' => ['required', 'integer', 'in:1,7'],
+            'is_published' => ['nullable', 'boolean'],
         ]);
 
         $route = Route::findOrFail($data['route_id']);
         $bus = Bus::findOrFail($data['bus_id']);
+
         $this->own($route);
         $this->own($bus);
 
+        if (!$route->is_active) {
+            throw ValidationException::withMessages([
+                'route_id' => 'The selected route is not active.',
+            ]);
+        }
+
+        if (!$bus->is_active) {
+            throw ValidationException::withMessages([
+                'bus_id' => 'The selected bus is not active.',
+            ]);
+        }
+
         if (!empty($data['driver_id'])) {
             $driver = Staff::findOrFail($data['driver_id']);
+
             $this->own($driver);
-            abort_unless($driver->role === 'driver', 422, 'Selected staff member is not a driver.');
+
+            if ($driver->role !== 'driver' || !$driver->is_active) {
+                throw ValidationException::withMessages([
+                    'driver_id' => 'Select an active driver.',
+                ]);
+            }
         }
 
         if (!empty($data['conductor_id'])) {
             $conductor = Staff::findOrFail($data['conductor_id']);
+
             $this->own($conductor);
-            abort_unless($conductor->role === 'conductor', 422, 'Selected staff member is not a conductor.');
+
+            if ($conductor->role !== 'conductor' || !$conductor->is_active) {
+                throw ValidationException::withMessages([
+                    'conductor_id' => 'Select an active conductor.',
+                ]);
+            }
         }
+
+        $schedule = $this->routeScheduleTimes(
+            (int) $route->id,
+            $data['trip_type']
+        );
 
         $scheduleDays = (int) $data['schedule_days'];
         $startDate = Carbon::parse($data['service_date'])->startOfDay();
-        $departureTime = Carbon::parse($data['departure_time'])->format('H:i:s');
-        $arrivalTime = !empty($data['arrival_time']) ? Carbon::parse($data['arrival_time'])->format('H:i:s') : null;
-        $firstDeparture = Carbon::createFromFormat('Y-m-d H:i:s', $startDate->format('Y-m-d') . ' ' . $departureTime, config('app.timezone'));
+
+        $firstDeparture = Carbon::createFromFormat(
+            'Y-m-d H:i:s',
+            $startDate->format('Y-m-d') . ' ' . $schedule['departure_time'],
+            config('app.timezone')
+        );
 
         if (!$firstDeparture->isFuture()) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'departure_time' => 'Trip departure date and time must be in the future.',
+            throw ValidationException::withMessages([
+                'service_date' => 'The first scheduled trip departure must be in the future.',
             ]);
         }
 
-        DB::transaction(function () use ($operator, $data, $scheduleDays, $startDate, $departureTime, $arrivalTime, $request) {
+        DB::transaction(function () use (
+            $operator,
+            $route,
+            $bus,
+            $data,
+            $scheduleDays,
+            $startDate,
+            $schedule,
+            $request
+        ) {
             for ($i = 0; $i < $scheduleDays; $i++) {
                 $serviceDate = $startDate->copy()->addDays($i);
+
+                $duplicate = Trip::where('operator_id', $operator->id)
+                    ->where('route_id', $route->id)
+                    ->where('bus_id', $bus->id)
+                    ->where('trip_type', $data['trip_type'])
+                    ->whereDate('service_date', $serviceDate->format('Y-m-d'))
+                    ->where('status', '!=', 'cancelled')
+                    ->exists();
+
+                if ($duplicate) {
+                    throw ValidationException::withMessages([
+                        'service_date' =>
+                            'A trip already exists for this bus, route, direction and date: '
+                            . $serviceDate->format('Y-m-d') . '.',
+                    ]);
+                }
+
                 $trip = $operator->trips()->create([
-                    'route_id' => $data['route_id'],
-                    'bus_id' => $data['bus_id'],
+                    'route_id' => $route->id,
+                    'bus_id' => $bus->id,
                     'driver_id' => $data['driver_id'] ?? null,
                     'conductor_id' => $data['conductor_id'] ?? null,
                     'trip_code' => $this->generateTripCode($operator),
                     'trip_type' => $data['trip_type'],
                     'service_date' => $serviceDate->format('Y-m-d'),
-                    'departure_time' => $departureTime,
-                    'arrival_time' => $arrivalTime,
-                    'fare' => $data['fare'],
+                    'departure_time' => $schedule['departure_time'],
+                    'arrival_time' => $schedule['arrival_time'],
+                    'fare' => 0,
                     'status' => 'scheduled',
                     'is_published' => $request->boolean('is_published'),
                 ]);
 
-                Audit::log('Create trip', 'Trips', $trip->trip_code);
+                Audit::log(
+                    'Create trip',
+                    'Trips',
+                    $trip->trip_code
+                );
             }
         });
 
-        return back()->with('success', $scheduleDays === 7 ? 'Seven-day trip schedule created successfully.' : 'Trip scheduled successfully.');
+        return back()->with(
+            'success',
+            $scheduleDays === 7
+                ? 'Seven-day trip schedule created successfully.'
+                : 'Trip scheduled successfully.'
+        );
     }
 
     public function toggleTripPublish(Trip $trip)
@@ -731,38 +680,76 @@ class OperatorController extends Controller
         $this->own($trip);
 
         if ($trip->status !== 'scheduled') {
-            return back()->with('error', 'Only scheduled trips can be edited.');
+            return back()->with(
+                'error',
+                'Only scheduled trips can be edited.'
+            );
         }
 
         $data = $request->validate([
-            'driver_id' => 'nullable|integer',
-            'conductor_id' => 'nullable|integer',
-            'service_date' => 'required|date|after_or_equal:today',
-            'departure_time' => 'required',
-            'arrival_time' => 'nullable',
-            'fare' => 'required|numeric|min:0',
+            'driver_id' => ['nullable', 'integer'],
+            'conductor_id' => ['nullable', 'integer'],
+            'service_date' => ['required', 'date', 'after_or_equal:today'],
         ]);
 
         if (!empty($data['driver_id'])) {
             $driver = Staff::findOrFail($data['driver_id']);
+
             $this->own($driver);
-            abort_unless($driver->role === 'driver', 422, 'Selected staff member is not a driver.');
+
+            if ($driver->role !== 'driver' || !$driver->is_active) {
+                throw ValidationException::withMessages([
+                    'driver_id' => 'Select an active driver.',
+                ]);
+            }
         }
 
         if (!empty($data['conductor_id'])) {
             $conductor = Staff::findOrFail($data['conductor_id']);
+
             $this->own($conductor);
-            abort_unless($conductor->role === 'conductor', 422, 'Selected staff member is not a conductor.');
+
+            if ($conductor->role !== 'conductor' || !$conductor->is_active) {
+                throw ValidationException::withMessages([
+                    'conductor_id' => 'Select an active conductor.',
+                ]);
+            }
         }
 
-        $serviceDate = Carbon::parse($data['service_date'])->format('Y-m-d');
-        $departureTime = Carbon::parse($data['departure_time'])->format('H:i:s');
-        $arrivalTime = !empty($data['arrival_time']) ? Carbon::parse($data['arrival_time'])->format('H:i:s') : null;
-        $departureAt = Carbon::createFromFormat('Y-m-d H:i:s', $serviceDate . ' ' . $departureTime, config('app.timezone'));
+        $schedule = $this->routeScheduleTimes(
+            (int) $trip->route_id,
+            (string) $trip->trip_type
+        );
+
+        $serviceDate = Carbon::parse(
+            $data['service_date']
+        )->format('Y-m-d');
+
+        $departureAt = Carbon::createFromFormat(
+            'Y-m-d H:i:s',
+            $serviceDate . ' ' . $schedule['departure_time'],
+            config('app.timezone')
+        );
 
         if (!$departureAt->isFuture()) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'departure_time' => 'Trip departure date and time must be in the future.',
+            throw ValidationException::withMessages([
+                'service_date' => 'The trip departure must be in the future.',
+            ]);
+        }
+
+        $duplicate = Trip::where('operator_id', $trip->operator_id)
+            ->where('route_id', $trip->route_id)
+            ->where('bus_id', $trip->bus_id)
+            ->where('trip_type', $trip->trip_type)
+            ->whereDate('service_date', $serviceDate)
+            ->where('id', '!=', $trip->id)
+            ->where('status', '!=', 'cancelled')
+            ->exists();
+
+        if ($duplicate) {
+            throw ValidationException::withMessages([
+                'service_date' =>
+                    'Another trip already exists for this bus, route, direction and date.',
             ]);
         }
 
@@ -770,14 +757,23 @@ class OperatorController extends Controller
             'driver_id' => $data['driver_id'] ?? null,
             'conductor_id' => $data['conductor_id'] ?? null,
             'service_date' => $serviceDate,
-            'departure_time' => $departureTime,
-            'arrival_time' => $arrivalTime,
-            'fare' => $data['fare'],
+            'departure_time' => $schedule['departure_time'],
+            'arrival_time' => $schedule['arrival_time'],
+            'fare' => 0,
         ]);
 
-        Audit::log('Update trip', 'Trips', $trip->trip_code);
+        Audit::log(
+            'Update trip',
+            'Trips',
+            $trip->trip_code
+        );
 
-        return redirect()->route('operator.trips')->with('success', 'Trip updated successfully.');
+        return redirect()
+            ->route('operator.trips')
+            ->with(
+                'success',
+                'Trip updated successfully.'
+            );
     }
 
     public function bookings()
@@ -1044,6 +1040,50 @@ class OperatorController extends Controller
             'success',
             'Alert resolved.'
         );
+    }
+
+    private function routeScheduleTimes(
+        int $routeId,
+        string $direction
+    ): array {
+        $stops = DB::table('route_booking_stops')
+            ->where('route_id', $routeId)
+            ->where('direction', $direction)
+            ->where('is_active', true)
+            ->orderBy('stop_order')
+            ->get();
+
+        if ($stops->count() < 2) {
+            throw ValidationException::withMessages([
+                'trip_type' =>
+                    'The selected route does not have a complete '
+                    . ucfirst($direction)
+                    . ' booking timetable.',
+            ]);
+        }
+
+        $first = $stops->first();
+        $last = $stops->last();
+
+        if (
+            empty($first->schedule_time) ||
+            empty($last->schedule_time)
+        ) {
+            throw ValidationException::withMessages([
+                'trip_type' =>
+                    'The selected route timetable is missing departure or arrival time.',
+            ]);
+        }
+
+        return [
+            'departure_time' => Carbon::parse(
+                $first->schedule_time
+            )->format('H:i:s'),
+
+            'arrival_time' => Carbon::parse(
+                $last->schedule_time
+            )->format('H:i:s'),
+        ];
     }
 
     private function generateTripCode(Operator $operator): string

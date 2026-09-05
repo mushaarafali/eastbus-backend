@@ -1,58 +1,134 @@
 @extends('layouts.app')
 
+@section('title', $route ? 'Edit Route' : 'Add Route')
+@section('header', $route ? 'Edit Route' : 'Add Route')
+
 @section('content')
 
 @php
     $isEdit = $route !== null;
-    $rows = old('stops');
 
-    if (!$rows) {
-        $rows = $stops->map(fn ($stop) => [
+    /*
+    |--------------------------------------------------------------------------
+    | Road Way Rows
+    |--------------------------------------------------------------------------
+    */
+
+    $roadRows = old('stops');
+
+    if (!$roadRows) {
+        $roadRows = $stops->map(fn ($stop) => [
             'name' => $stop->name,
             'fare_stage_no' => $stop->fare_stage_no,
             'distance_from_origin' => $stop->distance_from_origin ?? 0,
-            'booking_allowed' => !empty($stop->boarding_allowed) || !empty($stop->dropoff_allowed),
-            'starting_time' => $stop->starting_time ?? '',
-            'return_time' => $stop->return_time ?? '',
         ])->toArray();
     }
 
-    if (!$rows) {
-        $rows = [
+    if (!$roadRows) {
+        $roadRows = [
             [
                 'name' => '',
                 'fare_stage_no' => '',
                 'distance_from_origin' => 0,
-                'booking_allowed' => 1,
-                'starting_time' => '',
-                'return_time' => '',
             ],
             [
                 'name' => '',
                 'fare_stage_no' => '',
                 'distance_from_origin' => '',
-                'booking_allowed' => 1,
-                'starting_time' => '',
-                'return_time' => '',
+            ],
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Starting Booking Points
+    |--------------------------------------------------------------------------
+    */
+
+    $startingRows = old('starting_booking_stops');
+
+    if (!$startingRows) {
+        $startingRows = $startingBookingStops->map(function ($stop) {
+            return [
+                'road_stop_index' =>
+                    max(0, ((int) $stop->road_stop_order) - 1),
+
+                'schedule_time' =>
+                    $stop->schedule_time
+                        ? substr($stop->schedule_time, 0, 5)
+                        : '',
+            ];
+        })->toArray();
+    }
+
+    if (!$startingRows) {
+        $startingRows = [
+            [
+                'road_stop_index' => 0,
+                'schedule_time' => '',
+            ],
+            [
+                'road_stop_index' =>
+                    max(0, count($roadRows) - 1),
+                'schedule_time' => '',
+            ],
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Return Booking Points
+    |--------------------------------------------------------------------------
+    */
+
+    $returnRows = old('return_booking_stops');
+
+    if (!$returnRows) {
+        $returnRows = $returnBookingStops->map(function ($stop) {
+            return [
+                'road_stop_index' =>
+                    max(0, ((int) $stop->road_stop_order) - 1),
+
+                'schedule_time' =>
+                    $stop->schedule_time
+                        ? substr($stop->schedule_time, 0, 5)
+                        : '',
+            ];
+        })->toArray();
+    }
+
+    if (!$returnRows) {
+        $returnRows = [
+            [
+                'road_stop_index' =>
+                    max(0, count($roadRows) - 1),
+                'schedule_time' => '',
+            ],
+            [
+                'road_stop_index' => 0,
+                'schedule_time' => '',
             ],
         ];
     }
 @endphp
 
 <div class="container">
-    <h1>{{ $isEdit ? 'Edit Route' : 'Add Route' }}</h1>
 
-    <p>
-        Add all road-way stops in the correct order. The first stop becomes the route origin
-        and the last stop becomes the destination automatically.
+    <h1>
+        {{ $isEdit ? 'Edit Route' : 'Add Route' }}
+    </h1>
+
+    <p style="color:#667085;">
+        Add the complete road way first. Then select the passenger
+        booking points for the Starting and Return schedules.
     </p>
 
     <p style="color:#667085;">
-        Every stop must have a Fare Stage No. Only selected stops can be enabled for passenger booking.
-        Passenger fare is calculated automatically using the NTC fare-stage difference and bus type.
+        Fare is calculated automatically using the NTC Fare Stage No.
         Online booking is allowed only for journeys of at least 50 km.
     </p>
 
+    {{-- Validation Errors --}}
     @if($errors->any())
         <div class="alert alert-danger">
             <ul style="margin:0;">
@@ -63,6 +139,7 @@
         </div>
     @endif
 
+    {{-- Success Message --}}
     @if(session('success'))
         <div class="alert alert-success">
             {{ session('success') }}
@@ -71,7 +148,9 @@
 
     <form
         method="POST"
-        action="{{ $isEdit ? route('operator.routes.update', $route->id) : route('operator.routes.store') }}"
+        action="{{ $isEdit
+            ? route('operator.routes.update', $route->id)
+            : route('operator.routes.store') }}"
         autocomplete="off"
     >
         @csrf
@@ -80,454 +159,1239 @@
             @method('PUT')
         @endif
 
-        <div style="max-width:360px;margin-bottom:20px;">
-            <label for="duration_minutes">
-                Approx. Duration (minutes)
-            </label>
+        {{-- ============================================================
+             ROUTE DETAILS
+        ============================================================ --}}
 
-            <input
-                id="duration_minutes"
-                type="number"
-                name="duration_minutes"
-                class="form-control"
-                value="{{ old('duration_minutes', $route->duration_minutes ?? '') }}"
-                min="1"
-            >
-        </div>
+        <div class="card">
+            <div class="card-body">
 
-        <h3>Road Way Stops</h3>
+                <h3>Route Details</h3>
 
-        <div id="stops">
-            @foreach($rows as $index => $stop)
                 <div
-                    class="stop-row"
-                    style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;"
+                    style="
+                        display:grid;
+                        grid-template-columns:1fr 1fr;
+                        gap:14px;
+                        max-width:800px;
+                    "
                 >
-                    <div
-                        style="
-                            display:grid;
-                            grid-template-columns:70px 2fr 1fr 1.2fr;
-                            gap:10px;
-                            align-items:end;
-                        "
-                    >
-                        <div>
-                            <label>Order</label>
+                    <div>
+                        <label>
+                            Route Number
+                        </label>
 
-                            <input
-                                class="form-control stop-order"
-                                value="{{ $index + 1 }}"
-                                readonly
-                            >
-                        </div>
-
-                        <div>
-                            <label>Road Way Stop</label>
-
-                            <input
-                                class="form-control stop-name"
-                                name="stops[{{ $index }}][name]"
-                                value="{{ $stop['name'] ?? '' }}"
-                                placeholder="Example: Batticaloa"
-                                required
-                            >
-                        </div>
-
-                        <div>
-                            <label>Fare Stage No</label>
-
-                            <input
-                                class="form-control stop-stage"
-                                type="number"
-                                name="stops[{{ $index }}][fare_stage_no]"
-                                value="{{ $stop['fare_stage_no'] ?? '' }}"
-                                min="1"
-                                max="350"
-                                placeholder="Example: 81"
-                                required
-                            >
-                        </div>
-
-                        <div>
-                            <label>Distance from Origin (km)</label>
-
-                            <input
-                                class="form-control stop-distance"
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                name="stops[{{ $index }}][distance_from_origin]"
-                                value="{{ $stop['distance_from_origin'] ?? '' }}"
-                                placeholder="Example: 95.00"
-                                required
-                            >
-                        </div>
+                        <input
+                            type="text"
+                            name="route_number"
+                            class="form-control"
+                            value="{{ old(
+                                'route_number',
+                                $route->route_number ?? ''
+                            ) }}"
+                            placeholder="Example: 48"
+                        >
                     </div>
 
-                    <div
-                        style="
-                            display:grid;
-                            grid-template-columns:1.2fr 1fr 1fr auto;
-                            gap:12px;
-                            margin-top:14px;
-                            align-items:end;
-                        "
-                    >
-                        <div>
-                            <label style="display:block;margin-bottom:7px;">
-                                Passenger Booking
-                            </label>
+                    <div>
+                        <label>
+                            Approx. Duration (minutes)
+                        </label>
 
-                            <label
+                        <input
+                            type="number"
+                            name="duration_minutes"
+                            class="form-control"
+                            value="{{ old(
+                                'duration_minutes',
+                                $route->duration_minutes ?? ''
+                            ) }}"
+                            min="1"
+                            placeholder="Example: 180"
+                        >
+                    </div>
+                </div>
+
+                <small
+                    style="
+                        display:block;
+                        margin-top:10px;
+                        color:#667085;
+                    "
+                >
+                    Origin, destination and total route distance are
+                    calculated automatically from the Road Way.
+                </small>
+
+            </div>
+        </div>
+
+        {{-- ============================================================
+             FULL ROAD WAY
+        ============================================================ --}}
+
+        <div
+            class="card"
+            style="margin-top:18px;"
+        >
+            <div class="card-body">
+
+                <div
+                    style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:center;
+                        gap:12px;
+                        margin-bottom:14px;
+                    "
+                >
+                    <div>
+                        <h3 style="margin:0;">
+                            Road Way
+                        </h3>
+
+                        <small style="color:#667085;">
+                            Add every road-way stop in the correct order.
+                        </small>
+                    </div>
+
+                    <button
+                        type="button"
+                        id="add-road-stop"
+                        class="btn btn-outline-secondary"
+                    >
+                        + Add Stop
+                    </button>
+                </div>
+
+                <div id="road-stops">
+
+                    @foreach($roadRows as $index => $stop)
+
+                        <div
+                            class="road-stop-row"
+                            style="
+                                border:1px solid #e1e5eb;
+                                border-radius:10px;
+                                padding:14px;
+                                margin-bottom:10px;
+                            "
+                        >
+                            <div
                                 style="
-                                    display:flex;
-                                    gap:8px;
-                                    align-items:center;
+                                    display:grid;
+                                    grid-template-columns:
+                                        70px
+                                        minmax(180px,2fr)
+                                        minmax(120px,1fr)
+                                        minmax(160px,1.2fr)
+                                        auto;
+                                    gap:10px;
+                                    align-items:end;
                                 "
                             >
-                                <input
-                                    type="hidden"
-                                    name="stops[{{ $index }}][booking_allowed]"
-                                    value="0"
-                                >
+                                <div>
+                                    <label>
+                                        Order
+                                    </label>
 
-                                <input
-                                    class="booking-check"
-                                    type="checkbox"
-                                    name="stops[{{ $index }}][booking_allowed]"
-                                    value="1"
-                                    {{ !empty($stop['booking_allowed']) ? 'checked' : '' }}
-                                >
+                                    <input
+                                        class="form-control road-order"
+                                        value="{{ $index + 1 }}"
+                                        readonly
+                                    >
+                                </div>
 
-                                Booking Allowed
-                            </label>
+                                <div>
+                                    <label>
+                                        Road Way Stop
+                                    </label>
+
+                                    <input
+                                        class="form-control road-name"
+                                        name="stops[{{ $index }}][name]"
+                                        value="{{ $stop['name'] ?? '' }}"
+                                        placeholder="Example: Batticaloa"
+                                        required
+                                    >
+                                </div>
+
+                                <div>
+                                    <label>
+                                        Fare Stage No
+                                    </label>
+
+                                    <input
+                                        class="form-control road-stage"
+                                        type="number"
+                                        name="stops[{{ $index }}][fare_stage_no]"
+                                        value="{{ $stop['fare_stage_no'] ?? '' }}"
+                                        min="1"
+                                        max="350"
+                                        placeholder="81"
+                                        required
+                                    >
+                                </div>
+
+                                <div>
+                                    <label>
+                                        Distance from Origin (km)
+                                    </label>
+
+                                    <input
+                                        class="form-control road-distance"
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        name="stops[{{ $index }}][distance_from_origin]"
+                                        value="{{ $stop['distance_from_origin'] ?? '' }}"
+                                        placeholder="95.00"
+                                        required
+                                    >
+                                </div>
+
+                                <div>
+                                    <button
+                                        type="button"
+                                        class="
+                                            btn
+                                            btn-sm
+                                            btn-outline-danger
+                                            remove-road-stop
+                                        "
+                                    >
+                                        Remove
+                                    </button>
+                                </div>
+
+                            </div>
                         </div>
 
-                        <div>
-                            <label>Starting Time</label>
+                    @endforeach
 
-                            <input
-                                class="form-control starting-time"
-                                type="time"
-                                name="stops[{{ $index }}][starting_time]"
-                                value="{{ $stop['starting_time'] ?? '' }}"
-                                {{ !empty($stop['booking_allowed']) ? '' : 'disabled' }}
-                            >
-                        </div>
+                </div>
 
-                        <div>
-                            <label>Return Time</label>
+                <small style="color:#667085;">
+                    Latitude and Longitude are not required.
+                    The first stop automatically becomes the origin
+                    and the last stop becomes the destination.
+                </small>
 
-                            <input
-                                class="form-control return-time"
-                                type="time"
-                                name="stops[{{ $index }}][return_time]"
-                                value="{{ $stop['return_time'] ?? '' }}"
-                                {{ !empty($stop['booking_allowed']) ? '' : 'disabled' }}
-                            >
-                        </div>
+            </div>
+        </div>
 
-                        <div>
-                            <button
-                                type="button"
-                                class="btn btn-sm btn-outline-danger remove-stop"
-                            >
-                                Remove
-                            </button>
-                        </div>
+        {{-- ============================================================
+             STARTING BOOKING POINTS
+        ============================================================ --}}
+
+        <div
+            class="card"
+            style="margin-top:18px;"
+        >
+            <div class="card-body">
+
+                <div
+                    style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:center;
+                        gap:12px;
+                        margin-bottom:14px;
+                    "
+                >
+                    <div>
+                        <h3 style="margin:0;">
+                            Starting Booking Points
+                        </h3>
+
+                        <small style="color:#667085;">
+                            Select only the stops where passengers
+                            can book for the starting journey.
+                        </small>
                     </div>
 
-                    <small
-                        style="
-                            display:block;
-                            margin-top:8px;
-                            color:#667085;
-                        "
+                    <button
+                        type="button"
+                        id="add-starting-stop"
+                        class="btn btn-outline-secondary"
                     >
-                        Fare Stage No is used for automatic NTC fare calculation.
-                        Starting and Return times are used only for passenger-bookable stops.
-                    </small>
+                        + Add Booking Point
+                    </button>
                 </div>
-            @endforeach
+
+                <div id="starting-booking-stops">
+
+                    @foreach($startingRows as $index => $point)
+
+                        <div
+                            class="booking-row starting-booking-row"
+                            style="
+                                display:grid;
+                                grid-template-columns:
+                                    70px
+                                    minmax(220px,2fr)
+                                    minmax(150px,1fr)
+                                    auto;
+                                gap:10px;
+                                align-items:end;
+                                border:1px solid #e1e5eb;
+                                border-radius:10px;
+                                padding:14px;
+                                margin-bottom:10px;
+                            "
+                        >
+                            <div>
+                                <label>
+                                    Order
+                                </label>
+
+                                <input
+                                    class="
+                                        form-control
+                                        booking-order
+                                    "
+                                    value="{{ $index + 1 }}"
+                                    readonly
+                                >
+                            </div>
+
+                            <div>
+                                <label>
+                                    Booking Stop
+                                </label>
+
+                                <select
+                                    class="
+                                        form-control
+                                        booking-road-index
+                                    "
+                                    name="
+                                        starting_booking_stops[
+                                            {{ $index }}
+                                        ][road_stop_index]
+                                    "
+                                    data-selected="{{ $point['road_stop_index'] ?? '' }}"
+                                    required
+                                >
+                                    <option value="">
+                                        Select Road Way Stop
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label>
+                                    Starting Time
+                                </label>
+
+                                <input
+                                    type="time"
+                                    class="
+                                        form-control
+                                        booking-time
+                                    "
+                                    name="
+                                        starting_booking_stops[
+                                            {{ $index }}
+                                        ][schedule_time]
+                                    "
+                                    value="{{ $point['schedule_time'] ?? '' }}"
+                                    required
+                                >
+                            </div>
+
+                            <div>
+                                <button
+                                    type="button"
+                                    class="
+                                        btn
+                                        btn-sm
+                                        btn-outline-danger
+                                        remove-booking-stop
+                                    "
+                                >
+                                    Remove
+                                </button>
+                            </div>
+
+                        </div>
+
+                    @endforeach
+
+                </div>
+
+            </div>
         </div>
+
+        {{-- ============================================================
+             RETURN BOOKING POINTS
+        ============================================================ --}}
+
+        <div
+            class="card"
+            style="margin-top:18px;"
+        >
+            <div class="card-body">
+
+                <div
+                    style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:center;
+                        gap:12px;
+                        margin-bottom:14px;
+                    "
+                >
+                    <div>
+                        <h3 style="margin:0;">
+                            Return Booking Points
+                        </h3>
+
+                        <small style="color:#667085;">
+                            Return booking points must follow the
+                            Road Way in reverse order.
+                        </small>
+                    </div>
+
+                    <button
+                        type="button"
+                        id="add-return-stop"
+                        class="btn btn-outline-secondary"
+                    >
+                        + Add Booking Point
+                    </button>
+                </div>
+
+                <div id="return-booking-stops">
+
+                    @foreach($returnRows as $index => $point)
+
+                        <div
+                            class="booking-row return-booking-row"
+                            style="
+                                display:grid;
+                                grid-template-columns:
+                                    70px
+                                    minmax(220px,2fr)
+                                    minmax(150px,1fr)
+                                    auto;
+                                gap:10px;
+                                align-items:end;
+                                border:1px solid #e1e5eb;
+                                border-radius:10px;
+                                padding:14px;
+                                margin-bottom:10px;
+                            "
+                        >
+                            <div>
+                                <label>
+                                    Order
+                                </label>
+
+                                <input
+                                    class="
+                                        form-control
+                                        booking-order
+                                    "
+                                    value="{{ $index + 1 }}"
+                                    readonly
+                                >
+                            </div>
+
+                            <div>
+                                <label>
+                                    Booking Stop
+                                </label>
+
+                                <select
+                                    class="
+                                        form-control
+                                        booking-road-index
+                                    "
+                                    name="
+                                        return_booking_stops[
+                                            {{ $index }}
+                                        ][road_stop_index]
+                                    "
+                                    data-selected="{{ $point['road_stop_index'] ?? '' }}"
+                                    required
+                                >
+                                    <option value="">
+                                        Select Road Way Stop
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label>
+                                    Return Time
+                                </label>
+
+                                <input
+                                    type="time"
+                                    class="
+                                        form-control
+                                        booking-time
+                                    "
+                                    name="
+                                        return_booking_stops[
+                                            {{ $index }}
+                                        ][schedule_time]
+                                    "
+                                    value="{{ $point['schedule_time'] ?? '' }}"
+                                    required
+                                >
+                            </div>
+
+                            <div>
+                                <button
+                                    type="button"
+                                    class="
+                                        btn
+                                        btn-sm
+                                        btn-outline-danger
+                                        remove-booking-stop
+                                    "
+                                >
+                                    Remove
+                                </button>
+                            </div>
+
+                        </div>
+
+                    @endforeach
+
+                </div>
+
+            </div>
+        </div>
+
+        {{-- ============================================================
+             ACTIONS
+        ============================================================ --}}
 
         <div
             style="
                 display:flex;
                 gap:10px;
                 flex-wrap:wrap;
-                margin-top:14px;
+                margin-top:18px;
+                margin-bottom:30px;
             "
         >
-            <button
-                type="button"
-                id="add-stop"
-                class="btn btn-outline-secondary"
-            >
-                Add Stop
-            </button>
-
             <button
                 type="submit"
                 class="btn btn-primary"
             >
-                {{ $isEdit ? 'Update Route' : 'Create Route' }}
+                {{ $isEdit
+                    ? 'Update Route'
+                    : 'Create Route' }}
             </button>
 
-            @if($isEdit)
-                <a
-                    href="{{ route('operator.routes.index') }}"
-                    class="btn btn-outline-secondary"
-                >
-                    Cancel
-                </a>
-            @endif
+            <a
+                href="{{ route('operator.routes.index') }}"
+                class="btn btn-outline-secondary"
+            >
+                Cancel
+            </a>
         </div>
+
     </form>
 </div>
 
-<template id="stop-template">
+{{-- ================================================================
+     ROAD WAY TEMPLATE
+================================================================ --}}
+
+<template id="road-stop-template">
+
     <div
-        class="stop-row"
-        style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;"
+        class="road-stop-row"
+        style="
+            border:1px solid #e1e5eb;
+            border-radius:10px;
+            padding:14px;
+            margin-bottom:10px;
+        "
     >
         <div
             style="
                 display:grid;
-                grid-template-columns:70px 2fr 1fr 1.2fr;
+                grid-template-columns:
+                    70px
+                    minmax(180px,2fr)
+                    minmax(120px,1fr)
+                    minmax(160px,1.2fr)
+                    auto;
                 gap:10px;
                 align-items:end;
             "
         >
             <div>
-                <label>Order</label>
+                <label>
+                    Order
+                </label>
 
                 <input
-                    class="form-control stop-order"
+                    class="form-control road-order"
                     readonly
                 >
             </div>
 
             <div>
-                <label>Road Way Stop</label>
+                <label>
+                    Road Way Stop
+                </label>
 
                 <input
-                    class="form-control stop-name"
+                    class="form-control road-name"
                     placeholder="Example: Batticaloa"
                     required
                 >
             </div>
 
             <div>
-                <label>Fare Stage No</label>
+                <label>
+                    Fare Stage No
+                </label>
 
                 <input
-                    class="form-control stop-stage"
+                    class="form-control road-stage"
                     type="number"
                     min="1"
                     max="350"
-                    placeholder="Example: 81"
+                    placeholder="81"
                     required
                 >
             </div>
 
             <div>
-                <label>Distance from Origin (km)</label>
+                <label>
+                    Distance from Origin (km)
+                </label>
 
                 <input
-                    class="form-control stop-distance"
+                    class="form-control road-distance"
                     type="number"
                     step="0.01"
                     min="0"
-                    placeholder="Example: 95.00"
+                    placeholder="95.00"
                     required
-                >
-            </div>
-        </div>
-
-        <div
-            style="
-                display:grid;
-                grid-template-columns:1.2fr 1fr 1fr auto;
-                gap:12px;
-                margin-top:14px;
-                align-items:end;
-            "
-        >
-            <div>
-                <label style="display:block;margin-bottom:7px;">
-                    Passenger Booking
-                </label>
-
-                <label
-                    style="
-                        display:flex;
-                        gap:8px;
-                        align-items:center;
-                    "
-                >
-                    <input
-                        class="booking-hidden"
-                        type="hidden"
-                        value="0"
-                    >
-
-                    <input
-                        class="booking-check"
-                        type="checkbox"
-                        value="1"
-                    >
-
-                    Booking Allowed
-                </label>
-            </div>
-
-            <div>
-                <label>Starting Time</label>
-
-                <input
-                    class="form-control starting-time"
-                    type="time"
-                    disabled
-                >
-            </div>
-
-            <div>
-                <label>Return Time</label>
-
-                <input
-                    class="form-control return-time"
-                    type="time"
-                    disabled
                 >
             </div>
 
             <div>
                 <button
                     type="button"
-                    class="btn btn-sm btn-outline-danger remove-stop"
+                    class="
+                        btn
+                        btn-sm
+                        btn-outline-danger
+                        remove-road-stop
+                    "
                 >
                     Remove
                 </button>
             </div>
         </div>
-
-        <small
-            style="
-                display:block;
-                margin-top:8px;
-                color:#667085;
-            "
-        >
-            Fare Stage No is used for automatic NTC fare calculation.
-            Starting and Return times are used only for passenger-bookable stops.
-        </small>
     </div>
+
+</template>
+
+{{-- ================================================================
+     BOOKING POINT TEMPLATE
+================================================================ --}}
+
+<template id="booking-stop-template">
+
+    <div
+        class="booking-row"
+        style="
+            display:grid;
+            grid-template-columns:
+                70px
+                minmax(220px,2fr)
+                minmax(150px,1fr)
+                auto;
+            gap:10px;
+            align-items:end;
+            border:1px solid #e1e5eb;
+            border-radius:10px;
+            padding:14px;
+            margin-bottom:10px;
+        "
+    >
+        <div>
+            <label>
+                Order
+            </label>
+
+            <input
+                class="form-control booking-order"
+                readonly
+            >
+        </div>
+
+        <div>
+            <label>
+                Booking Stop
+            </label>
+
+            <select
+                class="
+                    form-control
+                    booking-road-index
+                "
+                required
+            >
+                <option value="">
+                    Select Road Way Stop
+                </option>
+            </select>
+        </div>
+
+        <div>
+            <label class="booking-time-label">
+                Time
+            </label>
+
+            <input
+                type="time"
+                class="
+                    form-control
+                    booking-time
+                "
+                required
+            >
+        </div>
+
+        <div>
+            <button
+                type="button"
+                class="
+                    btn
+                    btn-sm
+                    btn-outline-danger
+                    remove-booking-stop
+                "
+            >
+                Remove
+            </button>
+        </div>
+    </div>
+
 </template>
 
 <script>
 (function () {
-    const container = document.getElementById('stops');
-    const template = document.getElementById('stop-template');
-    const addButton = document.getElementById('add-stop');
 
-    function rebuildNames() {
-        const rows = container.querySelectorAll('.stop-row');
-
-        rows.forEach((row, index) => {
-            row.querySelector('.stop-order').value = index + 1;
-
-            const mappings = [
-                ['.stop-name', `stops[${index}][name]`],
-                ['.stop-stage', `stops[${index}][fare_stage_no]`],
-                ['.stop-distance', `stops[${index}][distance_from_origin]`],
-                ['.booking-hidden', `stops[${index}][booking_allowed]`],
-                ['.booking-check', `stops[${index}][booking_allowed]`],
-                ['.starting-time', `stops[${index}][starting_time]`],
-                ['.return-time', `stops[${index}][return_time]`],
-            ];
-
-            mappings.forEach(([selector, name]) => {
-                const element = row.querySelector(selector);
-
-                if (element) {
-                    element.name = name;
-                }
-            });
-
-            updateBookingState(row);
-        });
-    }
-
-    function updateBookingState(row) {
-        const booking = row.querySelector('.booking-check');
-        const startingTime = row.querySelector('.starting-time');
-        const returnTime = row.querySelector('.return-time');
-
-        if (!booking) {
-            return;
-        }
-
-        const enabled = booking.checked;
-
-        if (startingTime) {
-            startingTime.disabled = !enabled;
-
-            if (!enabled) {
-                startingTime.value = '';
-            }
-        }
-
-        if (returnTime) {
-            returnTime.disabled = !enabled;
-
-            if (!enabled) {
-                returnTime.value = '';
-            }
-        }
-    }
-
-    addButton.addEventListener('click', function () {
-        container.appendChild(
-            template.content.cloneNode(true)
+    const roadContainer =
+        document.getElementById(
+            'road-stops'
         );
 
-        rebuildNames();
-    });
+    const startingContainer =
+        document.getElementById(
+            'starting-booking-stops'
+        );
 
-    container.addEventListener('click', function (event) {
-        if (!event.target.classList.contains('remove-stop')) {
+    const returnContainer =
+        document.getElementById(
+            'return-booking-stops'
+        );
+
+    const roadTemplate =
+        document.getElementById(
+            'road-stop-template'
+        );
+
+    const bookingTemplate =
+        document.getElementById(
+            'booking-stop-template'
+        );
+
+    const addRoadButton =
+        document.getElementById(
+            'add-road-stop'
+        );
+
+    const addStartingButton =
+        document.getElementById(
+            'add-starting-stop'
+        );
+
+    const addReturnButton =
+        document.getElementById(
+            'add-return-stop'
+        );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Road Way Data
+    |--------------------------------------------------------------------------
+    */
+
+    function roadWayStops() {
+
+        return [
+            ...roadContainer.querySelectorAll(
+                '.road-stop-row'
+            )
+        ].map(
+            (row, index) => {
+
+                const name =
+                    row.querySelector(
+                        '.road-name'
+                    ).value.trim();
+
+                const stage =
+                    row.querySelector(
+                        '.road-stage'
+                    ).value.trim();
+
+                const distance =
+                    row.querySelector(
+                        '.road-distance'
+                    ).value.trim();
+
+                return {
+                    index,
+                    name,
+                    stage,
+                    distance,
+                };
+            }
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rebuild Road Way Names
+    |--------------------------------------------------------------------------
+    */
+
+    function rebuildRoadWay() {
+
+        const rows =
+            roadContainer.querySelectorAll(
+                '.road-stop-row'
+            );
+
+        rows.forEach(
+            (row, index) => {
+
+                row.querySelector(
+                    '.road-order'
+                ).value =
+                    index + 1;
+
+                row.querySelector(
+                    '.road-name'
+                ).name =
+                    `stops[${index}][name]`;
+
+                row.querySelector(
+                    '.road-stage'
+                ).name =
+                    `stops[${index}][fare_stage_no]`;
+
+                row.querySelector(
+                    '.road-distance'
+                ).name =
+                    `stops[${index}][distance_from_origin]`;
+            }
+        );
+
+        refreshBookingSelects();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Refresh Booking Dropdowns
+    |--------------------------------------------------------------------------
+    */
+
+    function refreshBookingSelects() {
+
+        const roadStops =
+            roadWayStops();
+
+        document
+            .querySelectorAll(
+                '.booking-road-index'
+            )
+            .forEach(
+                (select) => {
+
+                    const previous =
+                        select.value !== ''
+                            ? select.value
+                            : (
+                                select.dataset.selected ??
+                                ''
+                            );
+
+                    select.innerHTML =
+                        '<option value="">Select Road Way Stop</option>';
+
+                    roadStops.forEach(
+                        (stop) => {
+
+                            if (!stop.name) {
+                                return;
+                            }
+
+                            const option =
+                                document.createElement(
+                                    'option'
+                                );
+
+                            option.value =
+                                stop.index;
+
+                            option.textContent =
+                                `${stop.index + 1}. ${stop.name}` +
+                                (
+                                    stop.stage
+                                        ? ` • Stage ${stop.stage}`
+                                        : ''
+                                ) +
+                                (
+                                    stop.distance
+                                        ? ` • ${stop.distance} km`
+                                        : ''
+                                );
+
+                            if (
+                                String(stop.index) ===
+                                String(previous)
+                            ) {
+                                option.selected = true;
+                            }
+
+                            select.appendChild(
+                                option
+                            );
+                        }
+                    );
+
+                    select.dataset.selected =
+                        select.value;
+                }
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rebuild Booking Point Names
+    |--------------------------------------------------------------------------
+    */
+
+    function rebuildBookingRows(
+        container,
+        direction
+    ) {
+
+        const rows =
+            container.querySelectorAll(
+                '.booking-row'
+            );
+
+        rows.forEach(
+            (row, index) => {
+
+                row.querySelector(
+                    '.booking-order'
+                ).value =
+                    index + 1;
+
+                row.querySelector(
+                    '.booking-road-index'
+                ).name =
+                    `${direction}_booking_stops[${index}][road_stop_index]`;
+
+                row.querySelector(
+                    '.booking-time'
+                ).name =
+                    `${direction}_booking_stops[${index}][schedule_time]`;
+
+                const label =
+                    row.querySelector(
+                        '.booking-time-label'
+                    );
+
+                if (label) {
+                    label.textContent =
+                        direction === 'starting'
+                            ? 'Starting Time'
+                            : 'Return Time';
+                }
+            }
+        );
+
+        refreshBookingSelects();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Add Road Way Stop
+    |--------------------------------------------------------------------------
+    */
+
+    addRoadButton.addEventListener(
+        'click',
+        function () {
+
+            roadContainer.appendChild(
+                roadTemplate.content
+                    .cloneNode(true)
+            );
+
+            rebuildRoadWay();
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Add Starting Booking Point
+    |--------------------------------------------------------------------------
+    */
+
+    addStartingButton.addEventListener(
+        'click',
+        function () {
+
+            const fragment =
+                bookingTemplate.content
+                    .cloneNode(true);
+
+            const row =
+                fragment.querySelector(
+                    '.booking-row'
+                );
+
+            row.classList.add(
+                'starting-booking-row'
+            );
+
+            startingContainer.appendChild(
+                fragment
+            );
+
+            rebuildBookingRows(
+                startingContainer,
+                'starting'
+            );
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Add Return Booking Point
+    |--------------------------------------------------------------------------
+    */
+
+    addReturnButton.addEventListener(
+        'click',
+        function () {
+
+            const fragment =
+                bookingTemplate.content
+                    .cloneNode(true);
+
+            const row =
+                fragment.querySelector(
+                    '.booking-row'
+                );
+
+            row.classList.add(
+                'return-booking-row'
+            );
+
+            returnContainer.appendChild(
+                fragment
+            );
+
+            rebuildBookingRows(
+                returnContainer,
+                'return'
+            );
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Remove Road Way Stop
+    |--------------------------------------------------------------------------
+    */
+
+    roadContainer.addEventListener(
+        'click',
+        function (event) {
+
+            if (
+                !event.target.classList.contains(
+                    'remove-road-stop'
+                )
+            ) {
+                return;
+            }
+
+            const count =
+                roadContainer.querySelectorAll(
+                    '.road-stop-row'
+                ).length;
+
+            if (count <= 2) {
+                alert(
+                    'A route must contain at least two road-way stops.'
+                );
+
+                return;
+            }
+
+            event.target
+                .closest(
+                    '.road-stop-row'
+                )
+                .remove();
+
+            rebuildRoadWay();
+
+            rebuildBookingRows(
+                startingContainer,
+                'starting'
+            );
+
+            rebuildBookingRows(
+                returnContainer,
+                'return'
+            );
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Remove Booking Point
+    |--------------------------------------------------------------------------
+    */
+
+    function removeBookingPoint(
+        event,
+        container,
+        direction
+    ) {
+
+        if (
+            !event.target.classList.contains(
+                'remove-booking-stop'
+            )
+        ) {
             return;
         }
 
-        if (
-            container.querySelectorAll('.stop-row').length <= 2
-        ) {
+        const count =
+            container.querySelectorAll(
+                '.booking-row'
+            ).length;
+
+        if (count <= 2) {
             alert(
-                'A route must contain at least two stops.'
+                'Each direction must contain at least two booking points.'
             );
 
             return;
         }
 
-        event.target.closest('.stop-row').remove();
+        event.target
+            .closest(
+                '.booking-row'
+            )
+            .remove();
 
-        rebuildNames();
-    });
-
-    container.addEventListener('change', function (event) {
-        if (
-            !event.target.classList.contains('booking-check')
-        ) {
-            return;
-        }
-
-        updateBookingState(
-            event.target.closest('.stop-row')
+        rebuildBookingRows(
+            container,
+            direction
         );
-    });
+    }
 
-    rebuildNames();
+    startingContainer.addEventListener(
+        'click',
+        function (event) {
+
+            removeBookingPoint(
+                event,
+                startingContainer,
+                'starting'
+            );
+        }
+    );
+
+    returnContainer.addEventListener(
+        'click',
+        function (event) {
+
+            removeBookingPoint(
+                event,
+                returnContainer,
+                'return'
+            );
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Update Booking Dropdowns When Road Way Changes
+    |--------------------------------------------------------------------------
+    */
+
+    roadContainer.addEventListener(
+        'input',
+        function () {
+            refreshBookingSelects();
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Preserve Selected Booking Point
+    |--------------------------------------------------------------------------
+    */
+
+    document.addEventListener(
+        'change',
+        function (event) {
+
+            if (
+                event.target.classList.contains(
+                    'booking-road-index'
+                )
+            ) {
+                event.target.dataset.selected =
+                    event.target.value;
+            }
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Initial Build
+    |--------------------------------------------------------------------------
+    */
+
+    rebuildRoadWay();
+
+    rebuildBookingRows(
+        startingContainer,
+        'starting'
+    );
+
+    rebuildBookingRows(
+        returnContainer,
+        'return'
+    );
+
 })();
 </script>
 
