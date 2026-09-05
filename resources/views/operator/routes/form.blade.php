@@ -11,8 +11,9 @@
             'name' => $stop->name,
             'fare_stage_no' => $stop->fare_stage_no,
             'distance_from_origin' => $stop->distance_from_origin ?? 0,
-            'boarding_allowed' => $stop->boarding_allowed,
-            'dropoff_allowed' => $stop->dropoff_allowed,
+            'booking_allowed' => !empty($stop->boarding_allowed) || !empty($stop->dropoff_allowed),
+            'starting_time' => $stop->starting_time ?? '',
+            'return_time' => $stop->return_time ?? '',
         ])->toArray();
     }
 
@@ -22,15 +23,17 @@
                 'name' => '',
                 'fare_stage_no' => '',
                 'distance_from_origin' => 0,
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
+                'booking_allowed' => 1,
+                'starting_time' => '',
+                'return_time' => '',
             ],
             [
                 'name' => '',
                 'fare_stage_no' => '',
                 'distance_from_origin' => '',
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
+                'booking_allowed' => 1,
+                'starting_time' => '',
+                'return_time' => '',
             ],
         ];
     }
@@ -40,11 +43,14 @@
     <h1>{{ $isEdit ? 'Edit Route' : 'Add Route' }}</h1>
 
     <p>
-        Add all major towns and stops in the correct road order. The first stop becomes the route origin and the last stop becomes the destination automatically. Passenger booking is available only between approved booking stops and the journey must be at least 50 km.
+        Add all road-way stops in the correct order. The first stop becomes the route origin
+        and the last stop becomes the destination automatically.
     </p>
 
     <p style="color:#667085;">
-        Fare Stage No is required only for stops where passenger boarding or drop-off is allowed. Passenger fare will be calculated automatically using the NTC fare table based on the bus service class.
+        Every stop must have a Fare Stage No. Only selected stops can be enabled for passenger booking.
+        Passenger fare is calculated automatically using the NTC fare-stage difference and bus type.
+        Online booking is allowed only for journeys of at least 50 km.
     </p>
 
     @if($errors->any())
@@ -58,10 +64,16 @@
     @endif
 
     @if(session('success'))
-        <div class="alert alert-success">{{ session('success') }}</div>
+        <div class="alert alert-success">
+            {{ session('success') }}
+        </div>
     @endif
 
-    <form method="POST" action="{{ $isEdit ? route('operator.routes.update', $route->id) : route('operator.routes.store') }}" autocomplete="off">
+    <form
+        method="POST"
+        action="{{ $isEdit ? route('operator.routes.update', $route->id) : route('operator.routes.store') }}"
+        autocomplete="off"
+    >
         @csrf
 
         @if($isEdit)
@@ -69,116 +81,346 @@
         @endif
 
         <div style="max-width:360px;margin-bottom:20px;">
-            <label for="duration_minutes">Approx. Duration (minutes)</label>
-            <input id="duration_minutes" type="number" name="duration_minutes" class="form-control" value="{{ old('duration_minutes', $route->duration_minutes ?? '') }}" min="1">
+            <label for="duration_minutes">
+                Approx. Duration (minutes)
+            </label>
+
+            <input
+                id="duration_minutes"
+                type="number"
+                name="duration_minutes"
+                class="form-control"
+                value="{{ old('duration_minutes', $route->duration_minutes ?? '') }}"
+                min="1"
+            >
         </div>
 
         <h3>Road Way Stops</h3>
 
         <div id="stops">
             @foreach($rows as $index => $stop)
-                <div class="stop-row" style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;">
-                    <div style="display:grid;grid-template-columns:70px 2fr 1fr 1.2fr;gap:10px;align-items:end;">
+                <div
+                    class="stop-row"
+                    style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;"
+                >
+                    <div
+                        style="
+                            display:grid;
+                            grid-template-columns:70px 2fr 1fr 1.2fr;
+                            gap:10px;
+                            align-items:end;
+                        "
+                    >
                         <div>
                             <label>Order</label>
-                            <input class="form-control stop-order" value="{{ $index + 1 }}" readonly>
+
+                            <input
+                                class="form-control stop-order"
+                                value="{{ $index + 1 }}"
+                                readonly
+                            >
                         </div>
 
                         <div>
-                            <label>Stop Name</label>
-                            <input class="form-control stop-name" name="stops[{{ $index }}][name]" value="{{ $stop['name'] ?? '' }}" placeholder="Example: Batticaloa" required>
+                            <label>Road Way Stop</label>
+
+                            <input
+                                class="form-control stop-name"
+                                name="stops[{{ $index }}][name]"
+                                value="{{ $stop['name'] ?? '' }}"
+                                placeholder="Example: Batticaloa"
+                                required
+                            >
                         </div>
 
                         <div>
                             <label>Fare Stage No</label>
-                            <input class="form-control stop-stage" type="number" name="stops[{{ $index }}][fare_stage_no]" value="{{ $stop['fare_stage_no'] ?? '' }}" min="1" max="350" placeholder="Example: 81">
+
+                            <input
+                                class="form-control stop-stage"
+                                type="number"
+                                name="stops[{{ $index }}][fare_stage_no]"
+                                value="{{ $stop['fare_stage_no'] ?? '' }}"
+                                min="1"
+                                max="350"
+                                placeholder="Example: 81"
+                                required
+                            >
                         </div>
 
                         <div>
                             <label>Distance from Origin (km)</label>
-                            <input class="form-control stop-distance" type="number" step="0.01" min="0" name="stops[{{ $index }}][distance_from_origin]" value="{{ $stop['distance_from_origin'] ?? '' }}" placeholder="Example: 95.00" required>
+
+                            <input
+                                class="form-control stop-distance"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                name="stops[{{ $index }}][distance_from_origin]"
+                                value="{{ $stop['distance_from_origin'] ?? '' }}"
+                                placeholder="Example: 95.00"
+                                required
+                            >
                         </div>
                     </div>
 
-                    <div style="display:flex;gap:20px;margin-top:12px;align-items:center;flex-wrap:wrap;">
-                        <label>
-                            <input type="hidden" name="stops[{{ $index }}][boarding_allowed]" value="0">
-                            <input class="boarding-check" type="checkbox" name="stops[{{ $index }}][boarding_allowed]" value="1" {{ !empty($stop['boarding_allowed']) ? 'checked' : '' }}>
-                            Boarding Allowed
-                        </label>
+                    <div
+                        style="
+                            display:grid;
+                            grid-template-columns:1.2fr 1fr 1fr auto;
+                            gap:12px;
+                            margin-top:14px;
+                            align-items:end;
+                        "
+                    >
+                        <div>
+                            <label style="display:block;margin-bottom:7px;">
+                                Passenger Booking
+                            </label>
 
-                        <label>
-                            <input type="hidden" name="stops[{{ $index }}][dropoff_allowed]" value="0">
-                            <input class="dropoff-check" type="checkbox" name="stops[{{ $index }}][dropoff_allowed]" value="1" {{ !empty($stop['dropoff_allowed']) ? 'checked' : '' }}>
-                            Drop-off Allowed
-                        </label>
+                            <label
+                                style="
+                                    display:flex;
+                                    gap:8px;
+                                    align-items:center;
+                                "
+                            >
+                                <input
+                                    type="hidden"
+                                    name="stops[{{ $index }}][booking_allowed]"
+                                    value="0"
+                                >
 
-                        <button type="button" class="btn btn-sm btn-outline-danger remove-stop">Remove</button>
+                                <input
+                                    class="booking-check"
+                                    type="checkbox"
+                                    name="stops[{{ $index }}][booking_allowed]"
+                                    value="1"
+                                    {{ !empty($stop['booking_allowed']) ? 'checked' : '' }}
+                                >
+
+                                Booking Allowed
+                            </label>
+                        </div>
+
+                        <div>
+                            <label>Starting Time</label>
+
+                            <input
+                                class="form-control starting-time"
+                                type="time"
+                                name="stops[{{ $index }}][starting_time]"
+                                value="{{ $stop['starting_time'] ?? '' }}"
+                                {{ !empty($stop['booking_allowed']) ? '' : 'disabled' }}
+                            >
+                        </div>
+
+                        <div>
+                            <label>Return Time</label>
+
+                            <input
+                                class="form-control return-time"
+                                type="time"
+                                name="stops[{{ $index }}][return_time]"
+                                value="{{ $stop['return_time'] ?? '' }}"
+                                {{ !empty($stop['booking_allowed']) ? '' : 'disabled' }}
+                            >
+                        </div>
+
+                        <div>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-danger remove-stop"
+                            >
+                                Remove
+                            </button>
+                        </div>
                     </div>
 
-                    <small class="stage-help" style="display:block;margin-top:8px;color:#667085;">
-                        Fare Stage No is required when Boarding or Drop-off is enabled.
+                    <small
+                        style="
+                            display:block;
+                            margin-top:8px;
+                            color:#667085;
+                        "
+                    >
+                        Fare Stage No is used for automatic NTC fare calculation.
+                        Starting and Return times are used only for passenger-bookable stops.
                     </small>
                 </div>
             @endforeach
         </div>
 
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
-            <button type="button" id="add-stop" class="btn btn-outline-secondary">Add Stop</button>
+        <div
+            style="
+                display:flex;
+                gap:10px;
+                flex-wrap:wrap;
+                margin-top:14px;
+            "
+        >
+            <button
+                type="button"
+                id="add-stop"
+                class="btn btn-outline-secondary"
+            >
+                Add Stop
+            </button>
 
-            <button type="submit" class="btn btn-primary">
+            <button
+                type="submit"
+                class="btn btn-primary"
+            >
                 {{ $isEdit ? 'Update Route' : 'Create Route' }}
             </button>
 
             @if($isEdit)
-                <a href="{{ route('operator.routes.index') }}" class="btn btn-outline-secondary">Cancel</a>
+                <a
+                    href="{{ route('operator.routes.index') }}"
+                    class="btn btn-outline-secondary"
+                >
+                    Cancel
+                </a>
             @endif
         </div>
     </form>
 </div>
 
 <template id="stop-template">
-    <div class="stop-row" style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;">
-        <div style="display:grid;grid-template-columns:70px 2fr 1fr 1.2fr;gap:10px;align-items:end;">
+    <div
+        class="stop-row"
+        style="border:1px solid #ddd;padding:14px;margin-bottom:10px;border-radius:8px;"
+    >
+        <div
+            style="
+                display:grid;
+                grid-template-columns:70px 2fr 1fr 1.2fr;
+                gap:10px;
+                align-items:end;
+            "
+        >
             <div>
                 <label>Order</label>
-                <input class="form-control stop-order" readonly>
+
+                <input
+                    class="form-control stop-order"
+                    readonly
+                >
             </div>
 
             <div>
-                <label>Stop Name</label>
-                <input class="form-control stop-name" placeholder="Example: Batticaloa" required>
+                <label>Road Way Stop</label>
+
+                <input
+                    class="form-control stop-name"
+                    placeholder="Example: Batticaloa"
+                    required
+                >
             </div>
 
             <div>
                 <label>Fare Stage No</label>
-                <input class="form-control stop-stage" type="number" min="1" max="350" placeholder="Example: 81">
+
+                <input
+                    class="form-control stop-stage"
+                    type="number"
+                    min="1"
+                    max="350"
+                    placeholder="Example: 81"
+                    required
+                >
             </div>
 
             <div>
                 <label>Distance from Origin (km)</label>
-                <input class="form-control stop-distance" type="number" step="0.01" min="0" placeholder="Example: 95.00" required>
+
+                <input
+                    class="form-control stop-distance"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="Example: 95.00"
+                    required
+                >
             </div>
         </div>
 
-        <div style="display:flex;gap:20px;margin-top:12px;align-items:center;flex-wrap:wrap;">
-            <label>
-                <input class="boarding-hidden" type="hidden" value="0">
-                <input class="boarding-check" type="checkbox" value="1" checked>
-                Boarding Allowed
-            </label>
+        <div
+            style="
+                display:grid;
+                grid-template-columns:1.2fr 1fr 1fr auto;
+                gap:12px;
+                margin-top:14px;
+                align-items:end;
+            "
+        >
+            <div>
+                <label style="display:block;margin-bottom:7px;">
+                    Passenger Booking
+                </label>
 
-            <label>
-                <input class="dropoff-hidden" type="hidden" value="0">
-                <input class="dropoff-check" type="checkbox" value="1" checked>
-                Drop-off Allowed
-            </label>
+                <label
+                    style="
+                        display:flex;
+                        gap:8px;
+                        align-items:center;
+                    "
+                >
+                    <input
+                        class="booking-hidden"
+                        type="hidden"
+                        value="0"
+                    >
 
-            <button type="button" class="btn btn-sm btn-outline-danger remove-stop">Remove</button>
+                    <input
+                        class="booking-check"
+                        type="checkbox"
+                        value="1"
+                    >
+
+                    Booking Allowed
+                </label>
+            </div>
+
+            <div>
+                <label>Starting Time</label>
+
+                <input
+                    class="form-control starting-time"
+                    type="time"
+                    disabled
+                >
+            </div>
+
+            <div>
+                <label>Return Time</label>
+
+                <input
+                    class="form-control return-time"
+                    type="time"
+                    disabled
+                >
+            </div>
+
+            <div>
+                <button
+                    type="button"
+                    class="btn btn-sm btn-outline-danger remove-stop"
+                >
+                    Remove
+                </button>
+            </div>
         </div>
 
-        <small class="stage-help" style="display:block;margin-top:8px;color:#667085;">
-            Fare Stage No is required when Boarding or Drop-off is enabled.
+        <small
+            style="
+                display:block;
+                margin-top:8px;
+                color:#667085;
+            "
+        >
+            Fare Stage No is used for automatic NTC fare calculation.
+            Starting and Return times are used only for passenger-bookable stops.
         </small>
     </div>
 </template>
@@ -199,43 +441,57 @@
                 ['.stop-name', `stops[${index}][name]`],
                 ['.stop-stage', `stops[${index}][fare_stage_no]`],
                 ['.stop-distance', `stops[${index}][distance_from_origin]`],
-                ['.boarding-hidden', `stops[${index}][boarding_allowed]`],
-                ['.boarding-check', `stops[${index}][boarding_allowed]`],
-                ['.dropoff-hidden', `stops[${index}][dropoff_allowed]`],
-                ['.dropoff-check', `stops[${index}][dropoff_allowed]`],
+                ['.booking-hidden', `stops[${index}][booking_allowed]`],
+                ['.booking-check', `stops[${index}][booking_allowed]`],
+                ['.starting-time', `stops[${index}][starting_time]`],
+                ['.return-time', `stops[${index}][return_time]`],
             ];
 
             mappings.forEach(([selector, name]) => {
                 const element = row.querySelector(selector);
+
                 if (element) {
                     element.name = name;
                 }
             });
 
-            updateStageRequirement(row);
+            updateBookingState(row);
         });
     }
 
-    function updateStageRequirement(row) {
-        const boarding = row.querySelector('.boarding-check');
-        const dropoff = row.querySelector('.dropoff-check');
-        const stage = row.querySelector('.stop-stage');
+    function updateBookingState(row) {
+        const booking = row.querySelector('.booking-check');
+        const startingTime = row.querySelector('.starting-time');
+        const returnTime = row.querySelector('.return-time');
 
-        if (!boarding || !dropoff || !stage) {
+        if (!booking) {
             return;
         }
 
-        const isBookable = boarding.checked || dropoff.checked;
+        const enabled = booking.checked;
 
-        stage.required = isBookable;
+        if (startingTime) {
+            startingTime.disabled = !enabled;
 
-        if (isBookable) {
-            stage.style.borderColor = '';
+            if (!enabled) {
+                startingTime.value = '';
+            }
+        }
+
+        if (returnTime) {
+            returnTime.disabled = !enabled;
+
+            if (!enabled) {
+                returnTime.value = '';
+            }
         }
     }
 
     addButton.addEventListener('click', function () {
-        container.appendChild(template.content.cloneNode(true));
+        container.appendChild(
+            template.content.cloneNode(true)
+        );
+
         rebuildNames();
     });
 
@@ -244,21 +500,31 @@
             return;
         }
 
-        if (container.querySelectorAll('.stop-row').length <= 2) {
-            alert('A route must contain at least two stops.');
+        if (
+            container.querySelectorAll('.stop-row').length <= 2
+        ) {
+            alert(
+                'A route must contain at least two stops.'
+            );
+
             return;
         }
 
         event.target.closest('.stop-row').remove();
+
         rebuildNames();
     });
 
     container.addEventListener('change', function (event) {
-        if (!event.target.classList.contains('boarding-check') && !event.target.classList.contains('dropoff-check')) {
+        if (
+            !event.target.classList.contains('booking-check')
+        ) {
             return;
         }
 
-        updateStageRequirement(event.target.closest('.stop-row'));
+        updateBookingState(
+            event.target.closest('.stop-row')
+        );
     });
 
     rebuildNames();
