@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class FixedService extends Model
 {
@@ -22,61 +24,194 @@ class FixedService extends Model
         'is_published' => 'boolean',
     ];
 
-    public function operator()
+    /*
+    |--------------------------------------------------------------------------
+    | Operator
+    |--------------------------------------------------------------------------
+    */
+
+    public function operator(): BelongsTo
     {
-        return $this->belongsTo(Operator::class);
+        return $this->belongsTo(
+            Operator::class,
+            'operator_id'
+        );
     }
 
-    public function route()
+    /*
+    |--------------------------------------------------------------------------
+    | Master Route
+    |--------------------------------------------------------------------------
+    |
+    | The System Administrator manages the Master Route and its full roadway.
+    |
+    */
+
+    public function route(): BelongsTo
     {
-        return $this->belongsTo(Route::class);
+        return $this->belongsTo(
+            Route::class,
+            'route_id'
+        );
     }
 
-    public function bus()
+    /*
+    |--------------------------------------------------------------------------
+    | Bus
+    |--------------------------------------------------------------------------
+    |
+    | The operator bus assigned to this service.
+    |
+    */
+
+    public function bus(): BelongsTo
     {
-        return $this->belongsTo(Bus::class);
+        return $this->belongsTo(
+            Bus::class,
+            'bus_id'
+        );
     }
 
-    public function stops()
+    /*
+    |--------------------------------------------------------------------------
+    | Trips
+    |--------------------------------------------------------------------------
+    |
+    | Trips created from this exact Bus Route Service.
+    |
+    */
+
+    public function trips(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class)
+        return $this->hasMany(
+            Trip::class,
+            'fixed_service_id'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | All Service Stops
+    |--------------------------------------------------------------------------
+    |
+    | These are bus-specific booking/timetable stops selected from the
+    | Master Route roadway.
+    |
+    */
+
+    public function stops(): HasMany
+    {
+        return $this->hasMany(
+            FixedServiceStop::class,
+            'fixed_service_id'
+        )
             ->orderBy('direction')
             ->orderBy('stop_order');
     }
 
-    public function startingStops()
+    /*
+    |--------------------------------------------------------------------------
+    | Starting Direction Stops
+    |--------------------------------------------------------------------------
+    */
+
+    public function startingStops(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class)
-            ->where('direction', 'starting')
-            ->orderBy('stop_order');
+        return $this->hasMany(
+            FixedServiceStop::class,
+            'fixed_service_id'
+        )
+            ->where(
+                'direction',
+                'starting'
+            )
+            ->orderBy(
+                'stop_order'
+            );
     }
 
-    public function returnStops()
+    /*
+    |--------------------------------------------------------------------------
+    | Return Direction Stops
+    |--------------------------------------------------------------------------
+    */
+
+    public function returnStops(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class)
-            ->where('direction', 'return')
-            ->orderBy('stop_order');
+        return $this->hasMany(
+            FixedServiceStop::class,
+            'fixed_service_id'
+        )
+            ->where(
+                'direction',
+                'return'
+            )
+            ->orderBy(
+                'stop_order'
+            );
     }
 
-    public function startingBookingStops()
+    /*
+    |--------------------------------------------------------------------------
+    | Starting Booking Points
+    |--------------------------------------------------------------------------
+    */
+
+    public function startingBookingStops(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class)
-            ->where('direction', 'starting')
+        return $this->hasMany(
+            FixedServiceStop::class,
+            'fixed_service_id'
+        )
+            ->where(
+                'direction',
+                'starting'
+            )
             ->where(function ($query) {
-                $query->where('boarding_allowed', true)
-                    ->orWhere('dropoff_allowed', true);
+                $query
+                    ->where(
+                        'boarding_allowed',
+                        true
+                    )
+                    ->orWhere(
+                        'dropoff_allowed',
+                        true
+                    );
             })
-            ->orderBy('stop_order');
+            ->orderBy(
+                'stop_order'
+            );
     }
 
-    public function returnBookingStops()
+    /*
+    |--------------------------------------------------------------------------
+    | Return Booking Points
+    |--------------------------------------------------------------------------
+    */
+
+    public function returnBookingStops(): HasMany
     {
-        return $this->hasMany(FixedServiceStop::class)
-            ->where('direction', 'return')
+        return $this->hasMany(
+            FixedServiceStop::class,
+            'fixed_service_id'
+        )
+            ->where(
+                'direction',
+                'return'
+            )
             ->where(function ($query) {
-                $query->where('boarding_allowed', true)
-                    ->orWhere('dropoff_allowed', true);
+                $query
+                    ->where(
+                        'boarding_allowed',
+                        true
+                    )
+                    ->orWhere(
+                        'dropoff_allowed',
+                        true
+                    );
             })
-            ->orderBy('stop_order');
+            ->orderBy(
+                'stop_order'
+            );
     }
 }

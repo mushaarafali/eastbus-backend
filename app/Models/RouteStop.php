@@ -13,7 +13,7 @@ class RouteStop extends Model
         'name',
         'stop_order',
         'fare_stage_no',
-        'distance_from_origin',
+        'distance_from_origin_km',
         'latitude',
         'longitude',
         'booking_radius_km',
@@ -22,7 +22,7 @@ class RouteStop extends Model
     protected $casts = [
         'stop_order' => 'integer',
         'fare_stage_no' => 'integer',
-        'distance_from_origin' => 'decimal:2',
+        'distance_from_origin_km' => 'decimal:2',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
         'booking_radius_km' => 'decimal:2',
@@ -30,60 +30,19 @@ class RouteStop extends Model
 
     /*
     |--------------------------------------------------------------------------
-    | Route
+    | Master Route
     |--------------------------------------------------------------------------
+    |
+    | Each roadway stop belongs to one System Admin managed Master Route.
+    |
     */
 
     public function route(): BelongsTo
     {
         return $this->belongsTo(
             Route::class,
+            'route_id'
         );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Route Booking Stops
-    |--------------------------------------------------------------------------
-    |
-    | A road-way stop can be selected as a booking point for
-    | Starting direction, Return direction, or both.
-    |
-    */
-
-    public function bookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        );
-    }
-
-    public function startingBookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        )
-            ->where(
-                'direction',
-                'starting',
-            )
-            ->orderBy(
-                'stop_order',
-            );
-    }
-
-    public function returnBookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        )
-            ->where(
-                'direction',
-                'return',
-            )
-            ->orderBy(
-                'stop_order',
-            );
     }
 
     /*
@@ -91,7 +50,22 @@ class RouteStop extends Model
     | Fixed Service Stops
     |--------------------------------------------------------------------------
     |
-    | Kept for the existing fixed timetable-only service feature.
+    | This roadway stop can be selected by one or more operator bus services
+    | as a Starting or Return booking point.
+    |
+    | Example:
+    |
+    | Route Stop: Kalmunai
+    |
+    | Fixed Service A
+    |   -> Starting booking point
+    |   -> 05:45 AM
+    |
+    | Fixed Service B
+    |   -> Starting booking point
+    |   -> 08:15 AM
+    |
+    | The stop name and KM remain stored only in route_stops.
     |
     */
 
@@ -99,6 +73,7 @@ class RouteStop extends Model
     {
         return $this->hasMany(
             FixedServiceStop::class,
+            'route_stop_id'
         );
     }
 }

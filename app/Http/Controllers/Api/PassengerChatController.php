@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -21,42 +22,94 @@ class PassengerChatController extends Controller
     public function chat(Request $request)
     {
         $data = $request->validate([
-            'message' => ['required', 'string', 'max:1500'],
-            'context' => ['nullable', 'array'],
+            'message' => [
+                'required',
+                'string',
+                'max:1500',
+            ],
+
+            'context' => [
+                'nullable',
+                'array',
+            ],
         ]);
 
         try {
-            $message = trim((string) $data['message']);
-            $passengerContext = $data['context'] ?? [];
+            $message = trim(
+                (string) $data['message']
+            );
 
-            // 1. EastBus DB first. Matching route/service data is returned
-            // directly so Gemini downtime never blocks bus-information queries.
-            $databaseContext = $this->buildDatabaseContext($message);
+            $passengerContext =
+                $data['context'] ?? [];
 
-            if ($this->hasDatabaseMatch($databaseContext)) {
+            /*
+             * 1. EastBus database first.
+             */
+            $databaseContext =
+                $this->buildDatabaseContext(
+                    $message
+                );
+
+            if (
+                $this->hasDatabaseMatch(
+                    $databaseContext
+                )
+            ) {
                 return response()->json([
                     'success' => true,
-                    'reply' => $this->buildDirectDatabaseReply($databaseContext),
-                    'source' => 'eastbus_database',
-                    'database_match' => true,
-                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+
+                    'reply' =>
+                        $this->buildDirectDatabaseReply(
+                            $databaseContext
+                        ),
+
+                    'source' =>
+                        'eastbus_database',
+
+                    'database_match' =>
+                        true,
+
+                    'matched_locations' =>
+                        $databaseContext[
+                            'matched_locations'
+                        ] ?? [],
                 ]);
             }
 
-            // 2. Gemini is only a fallback for questions not answered by DB.
-            $apiKey = config('services.gemini.key');
+            /*
+             * 2. Gemini only as fallback.
+             */
+            $apiKey =
+                config(
+                    'services.gemini.key'
+                );
 
             if (empty($apiKey)) {
                 return response()->json([
                     'success' => true,
-                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
-                    'source' => 'eastbus_database_fallback',
-                    'database_match' => false,
-                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+
+                    'reply' =>
+                        $this->buildNoDatabaseMatchReply(
+                            $databaseContext
+                        ),
+
+                    'source' =>
+                        'eastbus_database_fallback',
+
+                    'database_match' =>
+                        false,
+
+                    'matched_locations' =>
+                        $databaseContext[
+                            'matched_locations'
+                        ] ?? [],
                 ]);
             }
 
-            $passengerContextText = $this->buildPassengerContextText($passengerContext);
+            $passengerContextText =
+                $this->buildPassengerContextText(
+                    $passengerContext
+                );
 
             $prompt = <<<PROMPT
 You are EastBus AI Assistant, the official passenger-support assistant for EastBus in Sri Lanka.
@@ -67,10 +120,10 @@ Keep answers short, clear, practical, and passenger-friendly.
 Important rules:
 - EastBus database did not return a matching direct service for this query.
 - Never invent buses, routes, fares, schedules, booking availability, booking references, passenger details, live locations, or trip statuses.
-- If the passenger asks about a route/bus that is not in EastBus data, clearly say no matching EastBus service was found.
+- If the passenger asks about a route or bus that is not in EastBus data, clearly say no matching EastBus service was found.
 - You may explain how to use Search Buses, booking, tickets, tracking, payments, feedback, login, or OTP features.
 - Never ask for passwords, OTPs, CVV, full card numbers, API keys, or tokens.
-- Use personal booking/trip details only if they appear in PASSENGER CONTEXT.
+- Use personal booking or trip details only if they appear in PASSENGER CONTEXT.
 
 PASSENGER CONTEXT:
 {$passengerContextText}
@@ -79,212 +132,637 @@ PASSENGER MESSAGE:
 {$message}
 PROMPT;
 
-            $response = Http::timeout(18)
-                ->retry(1, 700, throw: false)
-                ->withHeaders([
-                    'x-goog-api-key' => $apiKey,
-                    'Content-Type' => 'application/json',
-                ])
-                ->post(
-                    'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent',
+            $response =
+                Http::timeout(18)
+                    ->retry(
+                        1,
+                        700,
+                        throw: false
+                    )
+                    ->withHeaders([
+                        'x-goog-api-key' =>
+                            $apiKey,
+
+                        'Content-Type' =>
+                            'application/json',
+                    ])
+                    ->post(
+                        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent',
+                        [
+                            'contents' => [[
+                                'role' => 'user',
+
+                                'parts' => [[
+                                    'text' => $prompt,
+                                ]],
+                            ]],
+
+                            'generationConfig' => [
+                                'temperature' => 0.20,
+                                'topP' => 0.85,
+                                'maxOutputTokens' => 500,
+                            ],
+                        ]
+                    );
+
+            if (!$response->successful()) {
+                Log::warning(
+                    'Gemini API Fallback Error',
                     [
-                        'contents' => [[
-                            'role' => 'user',
-                            'parts' => [['text' => $prompt]],
-                        ]],
-                        'generationConfig' => [
-                            'temperature' => 0.20,
-                            'topP' => 0.85,
-                            'maxOutputTokens' => 500,
-                        ],
+                        'status' =>
+                            $response->status(),
+
+                        'response' =>
+                            $response->body(),
                     ]
                 );
 
-            if (!$response->successful()) {
-                Log::warning('Gemini API Fallback Error', [
-                    'status' => $response->status(),
-                    'response' => $response->body(),
-                ]);
-
                 return response()->json([
                     'success' => true,
-                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
-                    'source' => 'eastbus_database_fallback',
-                    'database_match' => false,
-                    'gemini_status' => $response->status(),
-                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+
+                    'reply' =>
+                        $this->buildNoDatabaseMatchReply(
+                            $databaseContext
+                        ),
+
+                    'source' =>
+                        'eastbus_database_fallback',
+
+                    'database_match' =>
+                        false,
+
+                    'gemini_status' =>
+                        $response->status(),
+
+                    'matched_locations' =>
+                        $databaseContext[
+                            'matched_locations'
+                        ] ?? [],
                 ]);
             }
 
-            $reply = data_get($response->json(), 'candidates.0.content.parts.0.text');
+            $reply =
+                data_get(
+                    $response->json(),
+                    'candidates.0.content.parts.0.text'
+                );
 
-            if (!is_string($reply) || trim($reply) === '') {
+            if (
+                !is_string($reply)
+                ||
+                trim($reply) === ''
+            ) {
                 return response()->json([
                     'success' => true,
-                    'reply' => $this->buildNoDatabaseMatchReply($databaseContext),
-                    'source' => 'eastbus_database_fallback',
-                    'database_match' => false,
-                    'matched_locations' => $databaseContext['matched_locations'] ?? [],
+
+                    'reply' =>
+                        $this->buildNoDatabaseMatchReply(
+                            $databaseContext
+                        ),
+
+                    'source' =>
+                        'eastbus_database_fallback',
+
+                    'database_match' =>
+                        false,
+
+                    'matched_locations' =>
+                        $databaseContext[
+                            'matched_locations'
+                        ] ?? [],
                 ]);
             }
 
             return response()->json([
                 'success' => true,
-                'reply' => trim($reply),
-                'source' => 'gemini',
-                'database_match' => false,
-                'matched_locations' => $databaseContext['matched_locations'] ?? [],
-                'model' => 'gemini-3.6-flash',
+
+                'reply' =>
+                    trim($reply),
+
+                'source' =>
+                    'gemini',
+
+                'database_match' =>
+                    false,
+
+                'matched_locations' =>
+                    $databaseContext[
+                        'matched_locations'
+                    ] ?? [],
+
+                'model' =>
+                    'gemini-3.6-flash',
             ]);
 
-        } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            Log::warning('Gemini Connection Error', ['message' => $e->getMessage()]);
+        } catch (
+            \Illuminate\Http\Client\ConnectionException $e
+        ) {
+            Log::warning(
+                'Gemini Connection Error',
+                [
+                    'message' =>
+                        $e->getMessage(),
+                ]
+            );
 
             return response()->json([
                 'success' => true,
-                'reply' => 'I could not find a matching EastBus service in the database right now. Please use Search Buses in the EastBus Passenger App to check the latest available services.',
-                'source' => 'eastbus_database_fallback',
-                'database_match' => false,
+
+                'reply' =>
+                    'I could not find a matching EastBus service in the database right now. Please use Search Buses in the EastBus Passenger App to check the latest available services.',
+
+                'source' =>
+                    'eastbus_database_fallback',
+
+                'database_match' =>
+                    false,
             ]);
 
         } catch (\Throwable $e) {
-            Log::error('Passenger Chatbot Error', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            Log::error(
+                'Passenger Chatbot Error',
+                [
+                    'message' =>
+                        $e->getMessage(),
+
+                    'file' =>
+                        $e->getFile(),
+
+                    'line' =>
+                        $e->getLine(),
+
+                    'trace' =>
+                        $e->getTraceAsString(),
+                ]
+            );
 
             return response()->json([
                 'success' => false,
-                'message' => 'Unable to process your message right now.',
+
+                'message' =>
+                    'Unable to process your message right now.',
             ], 500);
         }
     }
 
-    private function hasDatabaseMatch(array $context): bool
-    {
-        return !empty($context['online_trips'] ?? [])
-            || !empty($context['daily_service_buses'] ?? [])
-            || !empty($context['routes'] ?? []);
+    /*
+    |--------------------------------------------------------------------------
+    | Database Match
+    |--------------------------------------------------------------------------
+    */
+
+    private function hasDatabaseMatch(
+        array $context
+    ): bool {
+        return
+            !empty(
+                $context[
+                    'online_trips'
+                ] ?? []
+            )
+            ||
+            !empty(
+                $context[
+                    'daily_service_buses'
+                ] ?? []
+            )
+            ||
+            !empty(
+                $context[
+                    'routes'
+                ] ?? []
+            );
     }
 
-    private function buildDirectDatabaseReply(array $context): string
-    {
-        $locations = $context['matched_locations'] ?? [];
-        $origin = $locations[0] ?? 'selected origin';
-        $destination = $locations[1] ?? 'selected destination';
-        $onlineTrips = $context['online_trips'] ?? [];
-        $dailyServices = $context['daily_service_buses'] ?? [];
-        $routes = $context['routes'] ?? [];
+    /*
+    |--------------------------------------------------------------------------
+    | Direct Database Reply
+    |--------------------------------------------------------------------------
+    */
+
+    private function buildDirectDatabaseReply(
+        array $context
+    ): string {
+        $locations =
+            $context[
+                'matched_locations'
+            ] ?? [];
+
+        $origin =
+            $locations[0]
+            ??
+            'selected origin';
+
+        $destination =
+            $locations[1]
+            ??
+            'selected destination';
+
+        $onlineTrips =
+            $context[
+                'online_trips'
+            ] ?? [];
+
+        $dailyServices =
+            $context[
+                'daily_service_buses'
+            ] ?? [];
+
+        $routes =
+            $context[
+                'routes'
+            ] ?? [];
+
         $lines = [];
 
-        $serviceCount = count($onlineTrips) + count($dailyServices);
+        $serviceCount =
+            count($onlineTrips)
+            +
+            count($dailyServices);
 
         if ($serviceCount > 0) {
-            $lines[] = "I found {$serviceCount} EastBus service" . ($serviceCount === 1 ? '' : 's') . " from {$origin} to {$destination}.";
+            $lines[] =
+                "I found {$serviceCount} EastBus service"
+                .
+                (
+                    $serviceCount === 1
+                        ? ''
+                        : 's'
+                )
+                .
+                " from {$origin} to {$destination}.";
+
         } elseif (!empty($routes)) {
-            $lines[] = "I found an EastBus route from {$origin} to {$destination}, but there is no currently published passenger service for it.";
+            $lines[] =
+                "I found an EastBus route from {$origin} to {$destination}, but there is no currently published passenger service for it.";
         }
 
-        foreach (array_slice($onlineTrips, 0, 5) as $i => $trip) {
-            $name = trim((string) ($trip['company_name'] ?? $trip['bus_name'] ?? 'EastBus Service'));
-            $number = trim((string) ($trip['bus_number'] ?? ''));
-            $heading = ($i + 1) . '. ' . $name . ($number !== '' ? " ({$number})" : '');
-            $lines[] = $heading;
+        /*
+         * Online Trips
+         */
+        foreach (
+            array_slice(
+                $onlineTrips,
+                0,
+                5
+            )
+            as $i => $trip
+        ) {
+            $name =
+                trim(
+                    (string)
+                    (
+                        $trip[
+                            'company_name'
+                        ]
+                        ??
+                        $trip[
+                            'bus_name'
+                        ]
+                        ??
+                        'EastBus Service'
+                    )
+                );
 
-            if (!empty($trip['service_date'])) {
-                $lines[] = '   Date: ' . $trip['service_date'];
+            $number =
+                trim(
+                    (string)
+                    (
+                        $trip[
+                            'bus_number'
+                        ]
+                        ??
+                        ''
+                    )
+                );
+
+            $heading =
+                ($i + 1)
+                .
+                '. '
+                .
+                $name
+                .
+                (
+                    $number !== ''
+                        ? " ({$number})"
+                        : ''
+                );
+
+            $lines[] =
+                $heading;
+
+            if (
+                !empty(
+                    $trip[
+                        'service_date'
+                    ]
+                )
+            ) {
+                $lines[] =
+                    '   Date: '
+                    .
+                    $trip[
+                        'service_date'
+                    ];
             }
 
-            $boarding = '   Boarding: ' . ($trip['boarding_stop'] ?? $origin);
-            if (!empty($trip['boarding_time'])) {
-                $boarding .= ' - ' . $this->formatTime($trip['boarding_time']);
-            }
-            $lines[] = $boarding;
+            $boarding =
+                '   Boarding: '
+                .
+                (
+                    $trip[
+                        'boarding_stop'
+                    ]
+                    ??
+                    $origin
+                );
 
-            $dropoff = '   Drop-off: ' . ($trip['dropoff_stop'] ?? $destination);
-            if (!empty($trip['dropoff_time'])) {
-                $dropoff .= ' - ' . $this->formatTime($trip['dropoff_time']);
+            if (
+                !empty(
+                    $trip[
+                        'boarding_time'
+                    ]
+                )
+            ) {
+                $boarding .=
+                    ' - '
+                    .
+                    $this->formatTime(
+                        $trip[
+                            'boarding_time'
+                        ]
+                    );
             }
-            $lines[] = $dropoff;
 
-            if (isset($trip['fare']) && $trip['fare'] !== null) {
-                $lines[] = '   Fare: Rs. ' . number_format((float) $trip['fare'], 2);
+            $lines[] =
+                $boarding;
+
+            $dropoff =
+                '   Drop-off: '
+                .
+                (
+                    $trip[
+                        'dropoff_stop'
+                    ]
+                    ??
+                    $destination
+                );
+
+            if (
+                !empty(
+                    $trip[
+                        'dropoff_time'
+                    ]
+                )
+            ) {
+                $dropoff .=
+                    ' - '
+                    .
+                    $this->formatTime(
+                        $trip[
+                            'dropoff_time'
+                        ]
+                    );
             }
 
-            $lines[] = '   Online Booking: ' . (!empty($trip['booking_available']) ? 'Available' : 'Not Available');
+            $lines[] =
+                $dropoff;
+
+            if (
+                isset(
+                    $trip['fare']
+                )
+                &&
+                $trip['fare']
+                !==
+                null
+            ) {
+                $lines[] =
+                    '   Fare: Rs. '
+                    .
+                    number_format(
+                        (float)
+                        $trip['fare'],
+                        2
+                    );
+            }
+
+            $lines[] =
+                '   Online Booking: '
+                .
+                (
+                    !empty(
+                        $trip[
+                            'booking_available'
+                        ]
+                    )
+                        ? 'Available'
+                        : 'Not Available'
+                );
         }
 
+        /*
+         * Daily Service Buses
+         */
         if (!empty($dailyServices)) {
             if (!empty($onlineTrips)) {
                 $lines[] = '';
             }
-            $lines[] = 'Daily Service Bus:';
 
-            foreach (array_slice($dailyServices, 0, 5) as $i => $service) {
-                $name = trim((string) ($service['bus_name'] ?? 'Daily Service Bus'));
-                $number = trim((string) ($service['bus_number'] ?? ''));
-                $lines[] = ($i + 1) . '. ' . $name . ($number !== '' ? " ({$number})" : '');
+            $lines[] =
+                'Daily Service Bus:';
 
-                $boarding = '   Boarding: ' . ($service['boarding_stop'] ?? $origin);
-                if (!empty($service['boarding_time'])) {
-                    $boarding .= ' - ' . $this->formatTime($service['boarding_time']);
+            foreach (
+                array_slice(
+                    $dailyServices,
+                    0,
+                    5
+                )
+                as $i => $service
+            ) {
+                $name =
+                    trim(
+                        (string)
+                        (
+                            $service[
+                                'bus_name'
+                            ]
+                            ??
+                            'Daily Service Bus'
+                        )
+                    );
+
+                $number =
+                    trim(
+                        (string)
+                        (
+                            $service[
+                                'bus_number'
+                            ]
+                            ??
+                            ''
+                        )
+                    );
+
+                $lines[] =
+                    ($i + 1)
+                    .
+                    '. '
+                    .
+                    $name
+                    .
+                    (
+                        $number !== ''
+                            ? " ({$number})"
+                            : ''
+                    );
+
+                $boarding =
+                    '   Boarding: '
+                    .
+                    (
+                        $service[
+                            'boarding_stop'
+                        ]
+                        ??
+                        $origin
+                    );
+
+                if (
+                    !empty(
+                        $service[
+                            'boarding_time'
+                        ]
+                    )
+                ) {
+                    $boarding .=
+                        ' - '
+                        .
+                        $this->formatTime(
+                            $service[
+                                'boarding_time'
+                            ]
+                        );
                 }
-                $lines[] = $boarding;
 
-                $dropoff = '   Drop-off: ' . ($service['dropoff_stop'] ?? $destination);
-                if (!empty($service['dropoff_time'])) {
-                    $dropoff .= ' - ' . $this->formatTime($service['dropoff_time']);
+                $lines[] =
+                    $boarding;
+
+                $dropoff =
+                    '   Drop-off: '
+                    .
+                    (
+                        $service[
+                            'dropoff_stop'
+                        ]
+                        ??
+                        $destination
+                    );
+
+                if (
+                    !empty(
+                        $service[
+                            'dropoff_time'
+                        ]
+                    )
+                ) {
+                    $dropoff .=
+                        ' - '
+                        .
+                        $this->formatTime(
+                            $service[
+                                'dropoff_time'
+                            ]
+                        );
                 }
-                $lines[] = $dropoff;
 
-                $contacts = collect([
-                    $service['contact_number_1'] ?? null,
-                    $service['contact_number_2'] ?? null,
-                    $service['contact_number_3'] ?? null,
-                ])->filter()->unique()->values()->all();
+                $lines[] =
+                    $dropoff;
 
-                if (!empty($contacts)) {
-                    $lines[] = '   Contact: ' . implode(' / ', $contacts);
-                }
-
-                $lines[] = '   Online Booking: Not Available';
+                $lines[] =
+                    '   Online Booking: Not Available';
             }
         }
 
-        if (empty($onlineTrips) && empty($dailyServices) && !empty($routes)) {
-            $lines[] = 'Please use Search Buses in the EastBus Passenger App to check future published trips.';
+        if (
+            empty($onlineTrips)
+            &&
+            empty($dailyServices)
+            &&
+            !empty($routes)
+        ) {
+            $lines[] =
+                'Please use Search Buses in the EastBus Passenger App to check future published trips.';
         }
 
-        return implode("\n", $lines);
+        return implode(
+            "\n",
+            $lines
+        );
     }
 
-    private function buildNoDatabaseMatchReply(array $context): string
-    {
-        $locations = $context['matched_locations'] ?? [];
+    /*
+    |--------------------------------------------------------------------------
+    | No Database Match Reply
+    |--------------------------------------------------------------------------
+    */
 
-        if (count($locations) >= 2) {
-            return 'I could not find a matching EastBus service from '
-                . $locations[0]
-                . ' to '
-                . $locations[1]
-                . '. Please use Search Buses in the EastBus Passenger App to check the latest available services.';
+    private function buildNoDatabaseMatchReply(
+        array $context
+    ): string {
+        $locations =
+            $context[
+                'matched_locations'
+            ] ?? [];
+
+        if (
+            count($locations)
+            >=
+            2
+        ) {
+            return
+                'I could not find a matching EastBus service from '
+                .
+                $locations[0]
+                .
+                ' to '
+                .
+                $locations[1]
+                .
+                '. Please use Search Buses in the EastBus Passenger App to check the latest available services.';
         }
 
-        return 'I could not find matching EastBus route or bus information for that question. Please use Search Buses in the EastBus Passenger App or ask with both origin and destination.';
+        return
+            'I could not find matching EastBus route or bus information for that question. Please use Search Buses in the EastBus Passenger App or ask with both origin and destination.';
     }
 
-    private function formatTime($value): string
-    {
-        $text = trim((string) $value);
+    /*
+    |--------------------------------------------------------------------------
+    | Format Time
+    |--------------------------------------------------------------------------
+    */
+
+    private function formatTime(
+        $value
+    ): string {
+        $text =
+            trim(
+                (string)
+                $value
+            );
 
         if ($text === '') {
             return '';
         }
 
         try {
-            return \Carbon\Carbon::parse($text)->format('h:i A');
+            return Carbon::parse(
+                $text
+            )->format(
+                'h:i A'
+            );
+
         } catch (\Throwable $e) {
             return $text;
         }
@@ -318,12 +796,11 @@ PROMPT;
                 [],
         ];
 
-        /*
-         * For useful route matching we normally
-         * need at least two locations.
-         */
         if (
-            count($matchedLocations) <
+            count(
+                $matchedLocations
+            )
+            <
             2
         ) {
             return $context;
@@ -336,11 +813,8 @@ PROMPT;
             $matchedLocations[1];
 
         /*
-        |--------------------------------------------------------------------------
-        | Matching Routes
-        |--------------------------------------------------------------------------
-        */
-
+         * Matching Master Routes.
+         */
         $routeMatches =
             $this->findMatchingRoutes(
                 $origin,
@@ -354,21 +828,33 @@ PROMPT;
                         'route_id' =>
                             $route->id,
 
+                        'route_number' =>
+                            $route->route_number
+                            ??
+                            null,
+
                         'route_name' =>
-                            $route->name ?? null,
+                            $route->name
+                            ??
+                            null,
 
                         'origin' =>
-                            $route->origin ?? null,
+                            $route->origin
+                            ??
+                            null,
 
                         'destination' =>
-                            $route->destination ?? null,
+                            $route->destination
+                            ??
+                            null,
 
                         'distance_km' =>
                             isset(
                                 $route->distance_km
                             )
                                 ? (float)
-                                    $route->distance_km
+                                    $route
+                                        ->distance_km
                                 : null,
                     ]
                 )
@@ -383,13 +869,15 @@ PROMPT;
                 ->values();
 
         /*
-        |--------------------------------------------------------------------------
-        | Online Trips
-        |--------------------------------------------------------------------------
-        */
-
-        if ($routeIds->isNotEmpty()) {
-            $context['online_trips'] =
+         * Online trips.
+         */
+        if (
+            $routeIds
+                ->isNotEmpty()
+        ) {
+            $context[
+                'online_trips'
+            ] =
                 $this->findOnlineTrips(
                     $routeIds,
                     $origin,
@@ -398,12 +886,11 @@ PROMPT;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Daily Service Buses
-        |--------------------------------------------------------------------------
-        */
-
-        $context['daily_service_buses'] =
+         * Daily services.
+         */
+        $context[
+            'daily_service_buses'
+        ] =
             $this->findDailyServices(
                 $origin,
                 $destination
@@ -414,8 +901,13 @@ PROMPT;
 
     /*
     |--------------------------------------------------------------------------
-    | Detect Locations From Passenger Question
+    | Detect Locations
     |--------------------------------------------------------------------------
+    |
+    | Location names now come from route_stops only.
+    |
+    | stop_name duplication is no longer needed in fixed_service_stops.
+    |
     */
 
     private function detectLocations(
@@ -426,119 +918,54 @@ PROMPT;
                 $message
             );
 
-        $names =
-            collect();
-
-        /*
-        |--------------------------------------------------------------------------
-        | route_booking_stops
-        |--------------------------------------------------------------------------
-        */
-
         if (
-            Schema::hasTable(
-                'route_booking_stops'
-            ) &&
-            Schema::hasColumn(
-                'route_booking_stops',
-                'stop_name'
-            )
-        ) {
-            $names = $names->merge(
-                DB::table(
-                    'route_booking_stops'
-                )
-                    ->whereNotNull(
-                        'stop_name'
-                    )
-                    ->pluck(
-                        'stop_name'
-                    )
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | route_stops
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            Schema::hasTable(
+            !Schema::hasTable(
                 'route_stops'
-            ) &&
-            Schema::hasColumn(
-                'route_stops',
-                'name'
             )
         ) {
-            $names = $names->merge(
-                DB::table(
-                    'route_stops'
-                )
-                    ->whereNotNull(
-                        'name'
-                    )
-                    ->pluck(
-                        'name'
-                    )
-            );
+            return [];
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | fixed_service_stops
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            Schema::hasTable(
-                'fixed_service_stops'
-            ) &&
-            Schema::hasColumn(
-                'fixed_service_stops',
-                'stop_name'
+        $names =
+            DB::table(
+                'route_stops'
             )
-        ) {
-            $names = $names->merge(
-                DB::table(
-                    'fixed_service_stops'
+                ->whereNotNull(
+                    'name'
                 )
-                    ->whereNotNull(
-                        'stop_name'
-                    )
-                    ->pluck(
-                        'stop_name'
-                    )
-            );
-        }
-
-        /*
-         * Longest names first prevents a shorter
-         * place name matching before a longer one.
-         */
-        $names = $names
-            ->filter()
-            ->map(
-                fn ($name) =>
-                    trim(
-                        (string) $name
-                    )
-            )
-            ->filter()
-            ->unique(
-                fn ($name) =>
-                    mb_strtolower($name)
-            )
-            ->sortByDesc(
-                fn ($name) =>
-                    mb_strlen($name)
-            )
-            ->values();
+                ->pluck(
+                    'name'
+                )
+                ->filter()
+                ->map(
+                    fn ($name) =>
+                        trim(
+                            (string)
+                            $name
+                        )
+                )
+                ->filter()
+                ->unique(
+                    fn ($name) =>
+                        mb_strtolower(
+                            $name
+                        )
+                )
+                ->sortByDesc(
+                    fn ($name) =>
+                        mb_strlen(
+                            $name
+                        )
+                )
+                ->values();
 
         $matches = [];
 
-        foreach ($names as $name) {
+        foreach (
+            $names
+            as
+            $name
+        ) {
             $needle =
                 mb_strtolower(
                     $name
@@ -550,7 +977,11 @@ PROMPT;
                     $needle
                 );
 
-            if ($position === false) {
+            if (
+                $position
+                ===
+                false
+            ) {
                 continue;
             }
 
@@ -563,14 +994,6 @@ PROMPT;
             ];
         }
 
-        /*
-         * Preserve the order passenger typed:
-         *
-         * Batticaloa to Galle
-         *
-         * Batticaloa = origin
-         * Galle      = destination
-         */
         usort(
             $matches,
             fn ($a, $b) =>
@@ -585,7 +1008,9 @@ PROMPT;
             ->pluck('name')
             ->unique(
                 fn ($name) =>
-                    mb_strtolower($name)
+                    mb_strtolower(
+                        $name
+                    )
             )
             ->take(2)
             ->values()
@@ -594,7 +1019,7 @@ PROMPT;
 
     /*
     |--------------------------------------------------------------------------
-    | Find Routes Containing Both Locations
+    | Find Matching Master Routes
     |--------------------------------------------------------------------------
     */
 
@@ -605,18 +1030,14 @@ PROMPT;
         if (
             !Schema::hasTable(
                 'routes'
-            ) ||
+            )
+            ||
             !Schema::hasTable(
                 'route_stops'
             )
         ) {
             return collect();
         }
-
-        /*
-         * Find routes where both stops are
-         * present somewhere in the road way.
-         */
 
         $originRouteIds =
             DB::table(
@@ -658,7 +1079,9 @@ PROMPT;
                 ->unique()
                 ->values();
 
-        if ($routeIds->isEmpty()) {
+        if (
+            $routeIds->isEmpty()
+        ) {
             return collect();
         }
 
@@ -677,10 +1100,13 @@ PROMPT;
                 fn ($query) =>
                     $query->where(
                         'is_active',
-                        1
+                        true
                     )
             )
-            ->limit(10)
+            ->orderBy(
+                'route_number'
+            )
+            ->limit(20)
             ->get();
     }
 
@@ -688,6 +1114,9 @@ PROMPT;
     |--------------------------------------------------------------------------
     | Find Published Online Trips
     |--------------------------------------------------------------------------
+    |
+    | Each trip now uses its exact fixed_service_id.
+    |
     */
 
     private function findOnlineTrips(
@@ -707,51 +1136,37 @@ PROMPT;
             DB::table(
                 'trips'
             )
+                ->join(
+                    'routes',
+                    'routes.id',
+                    '=',
+                    'trips.route_id'
+                )
+                ->join(
+                    'buses',
+                    'buses.id',
+                    '=',
+                    'trips.bus_id'
+                )
+                ->leftJoin(
+                    'fixed_services',
+                    'fixed_services.id',
+                    '=',
+                    'trips.fixed_service_id'
+                )
+                ->leftJoin(
+                    'operators',
+                    'operators.id',
+                    '=',
+                    'trips.operator_id'
+                )
                 ->whereIn(
                     'trips.route_id',
                     $routeIds
+                )
+                ->whereNotNull(
+                    'trips.fixed_service_id'
                 );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Bus
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            Schema::hasTable(
-                'buses'
-            )
-        ) {
-            $query->leftJoin(
-                'buses',
-                'buses.id',
-                '=',
-                'trips.bus_id'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Operator
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            Schema::hasTable(
-                'operators'
-            ) &&
-            Schema::hasTable(
-                'buses'
-            )
-        ) {
-            $query->leftJoin(
-                'operators',
-                'operators.id',
-                '=',
-                'buses.operator_id'
-            );
-        }
 
         if (
             Schema::hasColumn(
@@ -761,7 +1176,7 @@ PROMPT;
         ) {
             $query->where(
                 'trips.is_published',
-                1
+                true
             );
         }
 
@@ -793,136 +1208,139 @@ PROMPT;
             );
         }
 
-        $select = [
-            'trips.id',
-            'trips.route_id',
-        ];
-
-        foreach (
-            [
-                'trip_code',
-                'service_date',
-                'status',
-                'trip_type',
-                'fare',
-                'is_published',
-            ]
-            as $column
-        ) {
-            if (
-                Schema::hasColumn(
-                    'trips',
-                    $column
-                )
-            ) {
-                $select[] =
-                    "trips.$column";
-            }
-        }
-
-        if (
-            Schema::hasTable(
-                'buses'
-            )
-        ) {
-            foreach (
-                [
-                    'bus_number',
-                    'bus_name',
-                    'bus_type',
-                ]
-                as $column
-            ) {
-                if (
-                    Schema::hasColumn(
-                        'buses',
-                        $column
-                    )
-                ) {
-                    $select[] =
-                        "buses.$column";
-                }
-            }
-        }
-
-        if (
-            Schema::hasTable(
-                'operators'
-            ) &&
-            Schema::hasColumn(
-                'operators',
-                'company_name'
-            )
-        ) {
-            $select[] =
-                'operators.company_name';
-        }
-
         $trips =
             $query
                 ->select(
-                    $select
+                    'trips.id',
+                    'trips.route_id',
+                    'trips.fixed_service_id',
+                    'trips.bus_id',
+                    'trips.trip_code',
+                    'trips.service_date',
+                    'trips.departure_time',
+                    'trips.arrival_time',
+                    'trips.status',
+                    'trips.trip_type',
+                    'trips.fare',
+                    'trips.is_published',
+
+                    'routes.route_number',
+                    'routes.origin',
+                    'routes.destination',
+
+                    'buses.bus_number',
+                    'buses.bus_name',
+                    'buses.bus_type',
+
+                    'fixed_services.service_name',
+                    'fixed_services.is_active as service_active',
+
+                    'operators.company_name'
                 )
                 ->orderBy(
-                    Schema::hasColumn(
-                        'trips',
-                        'service_date'
-                    )
-                        ? 'trips.service_date'
-                        : 'trips.id'
+                    'trips.service_date'
                 )
-                ->limit(10)
+                ->orderBy(
+                    'trips.departure_time'
+                )
+                ->limit(20)
                 ->get();
 
         return $trips
             ->map(
-                function ($trip) use (
+                function (
+                    $trip
+                ) use (
                     $origin,
                     $destination
                 ) {
+                    if (
+                        !(bool)
+                        $trip->service_active
+                    ) {
+                        return null;
+                    }
+
                     $times =
-                        $this->findBookingStopTimes(
-                            (int) $trip->route_id,
+                        $this->findServiceStopTimes(
+                            (int)
+                            $trip->fixed_service_id,
+
                             $origin,
+
                             $destination,
-                            $trip->trip_type ?? 'starting'
+
+                            $trip->trip_type
+                            ??
+                            'starting'
                         );
+
+                    if (
+                        !$times[
+                            'valid'
+                        ]
+                    ) {
+                        return null;
+                    }
 
                     return [
                         'trip_id' =>
                             $trip->id,
 
+                        'fixed_service_id' =>
+                            $trip
+                                ->fixed_service_id,
+
+                        'route_id' =>
+                            $trip->route_id,
+
+                        'route_number' =>
+                            $trip->route_number,
+
                         'trip_code' =>
                             $trip->trip_code
-                            ?? null,
+                            ??
+                            null,
+
+                        'service_name' =>
+                            $trip->service_name
+                            ??
+                            null,
 
                         'company_name' =>
                             $trip->company_name
-                            ?? null,
+                            ??
+                            null,
 
                         'bus_name' =>
                             $trip->bus_name
-                            ?? null,
+                            ??
+                            null,
 
                         'bus_number' =>
                             $trip->bus_number
-                            ?? null,
+                            ??
+                            null,
 
                         'bus_type' =>
                             $trip->bus_type
-                            ?? null,
+                            ??
+                            null,
 
                         'service_date' =>
                             $trip->service_date
-                            ?? null,
+                            ??
+                            null,
 
                         'direction' =>
                             $trip->trip_type
-                            ?? 'starting',
+                            ??
+                            'starting',
 
                         'status' =>
                             $trip->status
-                            ?? null,
+                            ??
+                            null,
 
                         'boarding_stop' =>
                             $origin,
@@ -941,38 +1359,48 @@ PROMPT;
                             ],
 
                         'fare' =>
-                            isset($trip->fare)
+                            isset(
+                                $trip->fare
+                            )
                                 ? (float)
                                     $trip->fare
                                 : null,
 
                         'booking_available' =>
-                            isset(
-                                $trip->is_published
-                            )
-                                ? (bool)
-                                    $trip->is_published
-                                : true,
+                            (bool)
+                            (
+                                $trip
+                                    ->is_published
+                                ??
+                                false
+                            ),
                     ];
                 }
             )
+            ->filter()
             ->values()
             ->all();
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Booking Stop Times
+    | Fixed Service Stop Times
     |--------------------------------------------------------------------------
+    |
+    | Uses the current Fixed Service Stop structure.
+    |
     */
 
-    private function findBookingStopTimes(
-        int $routeId,
+    private function findServiceStopTimes(
+        int $fixedServiceId,
         string $origin,
         string $destination,
         string $direction
     ): array {
         $result = [
+            'valid' =>
+                false,
+
             'boarding_time' =>
                 null,
 
@@ -982,95 +1410,130 @@ PROMPT;
 
         if (
             !Schema::hasTable(
-                'route_booking_stops'
+                'fixed_service_stops'
+            )
+            ||
+            !Schema::hasTable(
+                'route_stops'
             )
         ) {
             return $result;
         }
 
-        $query =
+        $rows =
             DB::table(
-                'route_booking_stops'
+                'fixed_service_stops as fss'
             )
+                ->join(
+                    'route_stops as rs',
+                    'rs.id',
+                    '=',
+                    'fss.route_stop_id'
+                )
                 ->where(
-                    'route_id',
-                    $routeId
-                );
+                    'fss.fixed_service_id',
+                    $fixedServiceId
+                )
+                ->where(
+                    'fss.direction',
+                    $direction
+                )
+                ->orderBy(
+                    'fss.stop_order'
+                )
+                ->select(
+                    'fss.id',
+                    'fss.route_stop_id',
+                    'fss.stop_order',
+                    'fss.arrival_time',
+                    'fss.departure_time',
+                    'fss.boarding_allowed',
+                    'fss.dropoff_allowed',
+                    'rs.name'
+                )
+                ->get()
+                ->values();
+
+        $originIndex =
+            $rows->search(
+                fn ($row) =>
+                    $this->sameStopName(
+                        (string)
+                        $row->name,
+
+                        $origin
+                    )
+            );
+
+        $destinationIndex =
+            $rows->search(
+                fn ($row) =>
+                    $this->sameStopName(
+                        (string)
+                        $row->name,
+
+                        $destination
+                    )
+            );
 
         if (
-            Schema::hasColumn(
-                'route_booking_stops',
-                'direction'
-            )
+            $originIndex === false
+            ||
+            $destinationIndex === false
+            ||
+            $originIndex >=
+            $destinationIndex
         ) {
-            $query->where(
-                'direction',
-                $direction
-            );
+            return $result;
         }
-
-        $rows =
-            $query->get();
 
         $boarding =
-            $rows->first(
-                fn ($row) =>
-                    mb_strtolower(
-                        trim(
-                            (string)
-                            (
-                                $row->stop_name
-                                ?? ''
-                            )
-                        )
-                    )
-                    ===
-                    mb_strtolower(
-                        trim($origin)
-                    )
-            );
+            $rows[
+                $originIndex
+            ];
 
         $dropoff =
-            $rows->first(
-                fn ($row) =>
-                    mb_strtolower(
-                        trim(
-                            (string)
-                            (
-                                $row->stop_name
-                                ?? ''
-                            )
-                        )
-                    )
-                    ===
-                    mb_strtolower(
-                        trim($destination)
-                    )
-            );
+            $rows[
+                $destinationIndex
+            ];
 
-        if ($boarding) {
-            $result[
-                'boarding_time'
-            ] =
-                $boarding->schedule_time
-                ?? null;
+        if (
+            !(bool)
+            $boarding->boarding_allowed
+            ||
+            !(bool)
+            $dropoff->dropoff_allowed
+        ) {
+            return $result;
         }
 
-        if ($dropoff) {
-            $result[
-                'dropoff_time'
-            ] =
-                $dropoff->schedule_time
-                ?? null;
-        }
+        return [
+            'valid' =>
+                true,
 
-        return $result;
+            'boarding_time' =>
+                $boarding
+                    ->departure_time
+                ??
+                $boarding
+                    ->arrival_time,
+
+            'dropoff_time' =>
+                $dropoff
+                    ->arrival_time
+                ??
+                $dropoff
+                    ->departure_time,
+        ];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Daily Service Bus
+    | Daily Service Buses
     |--------------------------------------------------------------------------
+    |
+    | fixed_services already represents operator/bus-specific services.
+    |
     */
 
     private function findDailyServices(
@@ -1080,131 +1543,108 @@ PROMPT;
         if (
             !Schema::hasTable(
                 'fixed_services'
-            ) ||
+            )
+            ||
             !Schema::hasTable(
                 'fixed_service_stops'
             )
+            ||
+            !Schema::hasTable(
+                'route_stops'
+            )
         ) {
             return [];
-        }
-
-        /*
-         * Find Daily Service Bus IDs that contain
-         * both passenger locations.
-         */
-
-        $originIds =
-            DB::table(
-                'fixed_service_stops'
-            )
-                ->whereRaw(
-                    'LOWER(stop_name) = ?',
-                    [
-                        mb_strtolower(
-                            $origin
-                        ),
-                    ]
-                )
-                ->pluck(
-                    'fixed_service_id'
-                );
-
-        $destinationIds =
-            DB::table(
-                'fixed_service_stops'
-            )
-                ->whereRaw(
-                    'LOWER(stop_name) = ?',
-                    [
-                        mb_strtolower(
-                            $destination
-                        ),
-                    ]
-                )
-                ->pluck(
-                    'fixed_service_id'
-                );
-
-        $serviceIds =
-            $originIds
-                ->intersect(
-                    $destinationIds
-                )
-                ->unique()
-                ->values();
-
-        if ($serviceIds->isEmpty()) {
-            return [];
-        }
-
-        $serviceQuery =
-            DB::table(
-                'fixed_services'
-            )
-                ->whereIn(
-                    'id',
-                    $serviceIds
-                );
-
-        if (
-            Schema::hasColumn(
-                'fixed_services',
-                'is_active'
-            )
-        ) {
-            $serviceQuery->where(
-                'is_active',
-                1
-            );
-        }
-
-        if (
-            Schema::hasColumn(
-                'fixed_services',
-                'is_published'
-            )
-        ) {
-            $serviceQuery->where(
-                'is_published',
-                1
-            );
         }
 
         $services =
-            $serviceQuery
-                ->limit(10)
+            DB::table(
+                'fixed_services as fs'
+            )
+                ->join(
+                    'routes as r',
+                    'r.id',
+                    '=',
+                    'fs.route_id'
+                )
+                ->join(
+                    'buses as b',
+                    'b.id',
+                    '=',
+                    'fs.bus_id'
+                )
+                ->leftJoin(
+                    'operators as o',
+                    'o.id',
+                    '=',
+                    'fs.operator_id'
+                )
+                ->where(
+                    'fs.is_active',
+                    true
+                )
+                ->where(
+                    'fs.is_published',
+                    true
+                )
+                ->where(
+                    'r.is_active',
+                    true
+                )
+                ->where(
+                    'b.is_active',
+                    true
+                )
+                ->select(
+                    'fs.id',
+                    'fs.route_id',
+                    'fs.bus_id',
+                    'fs.service_name',
+                    'fs.starting_time',
+                    'fs.return_time',
+
+                    'r.route_number',
+                    'r.origin',
+                    'r.destination',
+
+                    'b.bus_number',
+                    'b.bus_name',
+                    'b.bus_type',
+
+                    'o.company_name'
+                )
+                ->orderBy(
+                    'r.route_number'
+                )
+                ->limit(30)
                 ->get();
 
         return $services
             ->map(
-                function ($service) use (
+                function (
+                    $service
+                ) use (
                     $origin,
                     $destination
                 ) {
-                    $stops =
-                        DB::table(
-                            'fixed_service_stops'
-                        )
-                            ->where(
-                                'fixed_service_id',
-                                $service->id
-                            )
-                            ->orderBy(
-                                Schema::hasColumn(
-                                    'fixed_service_stops',
-                                    'stop_order'
-                                )
-                                    ? 'stop_order'
-                                    : 'id'
-                            )
-                            ->get();
-
                     $matchingDirection =
-                        $this->findDailyServiceDirection(
-                            $stops,
+                        $this->findFixedServiceDirection(
+                            (int)
+                            $service->id,
+
                             $origin,
+
                             $destination
                         );
+
+                    if (
+                        $matchingDirection[
+                            'direction'
+                        ]
+                        ===
+                        null
+                    ) {
+                        return null;
+                    }
 
                     return [
                         'service_id' =>
@@ -1213,25 +1653,29 @@ PROMPT;
                         'service_type' =>
                             'Daily Service Bus',
 
+                        'service_name' =>
+                            $service
+                                ->service_name,
+
+                        'route_number' =>
+                            $service
+                                ->route_number,
+
+                        'company_name' =>
+                            $service
+                                ->company_name,
+
                         'bus_name' =>
-                            $service->bus_name
-                            ?? null,
+                            $service
+                                ->bus_name,
 
                         'bus_number' =>
-                            $service->bus_number
-                            ?? null,
+                            $service
+                                ->bus_number,
 
-                        'contact_number_1' =>
-                            $service->contact_number_1
-                            ?? null,
-
-                        'contact_number_2' =>
-                            $service->contact_number_2
-                            ?? null,
-
-                        'contact_number_3' =>
-                            $service->contact_number_3
-                            ?? null,
+                        'bus_type' =>
+                            $service
+                                ->bus_type,
 
                         'direction' =>
                             $matchingDirection[
@@ -1254,33 +1698,24 @@ PROMPT;
                                 'dropoff_time'
                             ],
 
-                        /*
-                         * Daily Service Bus does not
-                         * automatically mean online booking.
-                         */
                         'online_booking_available' =>
                             false,
                     ];
                 }
             )
-            ->filter(
-                fn ($service) =>
-                    $service[
-                        'direction'
-                    ] !== null
-            )
+            ->filter()
             ->values()
             ->all();
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Daily Service Direction
+    | Fixed Service Direction
     |--------------------------------------------------------------------------
     */
 
-    private function findDailyServiceDirection(
-        Collection $stops,
+    private function findFixedServiceDirection(
+        int $fixedServiceId,
         string $origin,
         string $destination
     ): array {
@@ -1291,77 +1726,65 @@ PROMPT;
             ]
             as $direction
         ) {
-            $directionStops =
-                $stops
-                    ->filter(
-                        function ($stop) use (
-                            $direction
-                        ) {
-                            if (
-                                !property_exists(
-                                    $stop,
-                                    'direction'
-                                )
-                            ) {
-                                return true;
-                            }
-
-                            return
-                                strtolower(
-                                    (string)
-                                    $stop->direction
-                                )
-                                ===
-                                $direction;
-                        }
+            $stops =
+                DB::table(
+                    'fixed_service_stops as fss'
+                )
+                    ->join(
+                        'route_stops as rs',
+                        'rs.id',
+                        '=',
+                        'fss.route_stop_id'
                     )
+                    ->where(
+                        'fss.fixed_service_id',
+                        $fixedServiceId
+                    )
+                    ->where(
+                        'fss.direction',
+                        $direction
+                    )
+                    ->orderBy(
+                        'fss.stop_order'
+                    )
+                    ->select(
+                        'fss.stop_order',
+                        'fss.arrival_time',
+                        'fss.departure_time',
+                        'fss.boarding_allowed',
+                        'fss.dropoff_allowed',
+                        'rs.name'
+                    )
+                    ->get()
                     ->values();
 
             $originIndex =
-                $directionStops
-                    ->search(
-                        fn ($stop) =>
-                            mb_strtolower(
-                                trim(
-                                    (string)
-                                    (
-                                        $stop->stop_name
-                                        ?? ''
-                                    )
-                                )
-                            )
-                            ===
-                            mb_strtolower(
-                                trim(
-                                    $origin
-                                )
-                            )
-                    );
+                $stops->search(
+                    fn ($stop) =>
+                        $this->sameStopName(
+                            (string)
+                            $stop->name,
+
+                            $origin
+                        )
+                );
 
             $destinationIndex =
-                $directionStops
-                    ->search(
-                        fn ($stop) =>
-                            mb_strtolower(
-                                trim(
-                                    (string)
-                                    (
-                                        $stop->stop_name
-                                        ?? ''
-                                    )
-                                )
-                            )
-                            ===
-                            mb_strtolower(
-                                trim(
-                                    $destination
-                                )
-                            )
-                    );
+                $stops->search(
+                    fn ($stop) =>
+                        $this->sameStopName(
+                            (string)
+                            $stop->name,
+
+                            $destination
+                        )
+                );
 
             if (
-                $originIndex === false ||
-                $destinationIndex === false ||
+                $originIndex === false
+                ||
+                $destinationIndex === false
+                ||
                 $originIndex >=
                 $destinationIndex
             ) {
@@ -1369,32 +1792,44 @@ PROMPT;
             }
 
             $boarding =
-                $directionStops[
+                $stops[
                     $originIndex
                 ];
 
             $dropoff =
-                $directionStops[
+                $stops[
                     $destinationIndex
                 ];
+
+            if (
+                !(bool)
+                $boarding
+                    ->boarding_allowed
+                ||
+                !(bool)
+                $dropoff
+                    ->dropoff_allowed
+            ) {
+                continue;
+            }
 
             return [
                 'direction' =>
                     $direction,
 
                 'boarding_time' =>
-                    $boarding->departure_time
+                    $boarding
+                        ->departure_time
                     ??
-                    $boarding->arrival_time
-                    ??
-                    null,
+                    $boarding
+                        ->arrival_time,
 
                 'dropoff_time' =>
-                    $dropoff->arrival_time
+                    $dropoff
+                        ->arrival_time
                     ??
-                    $dropoff->departure_time
-                    ??
-                    null,
+                    $dropoff
+                        ->departure_time,
             ];
         }
 
@@ -1408,6 +1843,26 @@ PROMPT;
             'dropoff_time' =>
                 null,
         ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Stop Name Helper
+    |--------------------------------------------------------------------------
+    */
+
+    private function sameStopName(
+        string $a,
+        string $b
+    ): bool {
+        return
+            mb_strtolower(
+                trim($a)
+            )
+            ===
+            mb_strtolower(
+                trim($b)
+            );
     }
 
     /*
@@ -1431,6 +1886,9 @@ PROMPT;
             'trip_id',
             'trip_code',
             'trip_status',
+            'fixed_service_id',
+            'service_name',
+            'route_number',
             'bus_name',
             'bus_number',
             'origin',
@@ -1466,16 +1924,26 @@ PROMPT;
             }
         }
 
-        if (empty($safeContext)) {
+        if (
+            empty(
+                $safeContext
+            )
+        ) {
             return
                 'No usable personal EastBus context was provided.';
         }
 
-        return json_encode(
-            $safeContext,
-            JSON_PRETTY_PRINT |
-            JSON_UNESCAPED_UNICODE |
-            JSON_UNESCAPED_SLASHES
-        ) ?: 'No usable personal EastBus context was provided.';
+        return
+            json_encode(
+                $safeContext,
+
+                JSON_PRETTY_PRINT
+                |
+                JSON_UNESCAPED_UNICODE
+                |
+                JSON_UNESCAPED_SLASHES
+            )
+            ?:
+            'No usable personal EastBus context was provided.';
     }
 }

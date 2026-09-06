@@ -3,13 +3,12 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Route extends Model
 {
     protected $fillable = [
-        'operator_id',
+        'route_number',
         'name',
         'origin',
         'destination',
@@ -26,19 +25,21 @@ class Route extends Model
         'is_active' => 'boolean',
     ];
 
-    public function operator(): BelongsTo
-    {
-        return $this->belongsTo(
-            Operator::class,
-        );
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Full Road Way Stops
+    | Fixed Road Way Stops
     |--------------------------------------------------------------------------
     |
-    | All towns / stops in the complete route order.
+    | Full System Admin managed roadway for this Master Route.
+    |
+    | Example:
+    |
+    | Route 76
+    | Akkaraipattu
+    | Addalaichenai
+    | Kalmunai
+    | Batticaloa
+    | Trincomalee
     |
     */
 
@@ -46,89 +47,59 @@ class Route extends Model
     {
         return $this->hasMany(
             RouteStop::class,
-        )->orderBy(
-            'stop_order',
-        );
+            'route_id'
+        )->orderBy('stop_order');
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Booking Stops
+    | Fixed Bus Route Services
     |--------------------------------------------------------------------------
     |
-    | Only selected road-way stops that are available for passenger booking.
-    | Starting and Return directions are stored separately.
+    | Multiple operators and buses can use the same Master Route.
     |
-    */
-
-    public function bookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        )->orderBy(
-            'stop_order',
-        );
-    }
-
-    public function startingBookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        )
-            ->where(
-                'direction',
-                'starting',
-            )
-            ->where(
-                'is_active',
-                true,
-            )
-            ->orderBy(
-                'stop_order',
-            );
-    }
-
-    public function returnBookingStops(): HasMany
-    {
-        return $this->hasMany(
-            RouteBookingStop::class,
-        )
-            ->where(
-                'direction',
-                'return',
-            )
-            ->where(
-                'is_active',
-                true,
-            )
-            ->orderBy(
-                'stop_order',
-            );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Trips
-    |--------------------------------------------------------------------------
-    */
-
-    public function trips(): HasMany
-    {
-        return $this->hasMany(
-            Trip::class,
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Fixed Services
-    |--------------------------------------------------------------------------
+    | Example:
+    |
+    | Route 76
+    |   ├── Bus A Service
+    |   ├── Bus B Service
+    |   └── Bus C Service
+    |
+    | Each Fixed Service can have different:
+    |
+    | - Bus
+    | - Operator
+    | - Starting booking points
+    | - Return booking points
+    | - Starting timetable
+    | - Return timetable
+    |
     */
 
     public function fixedServices(): HasMany
     {
         return $this->hasMany(
             FixedService::class,
+            'route_id'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Trips
+    |--------------------------------------------------------------------------
+    |
+    | Trips running on this Master Route.
+    |
+    | Each trip is also linked to an exact fixed_service_id.
+    |
+    */
+
+    public function trips(): HasMany
+    {
+        return $this->hasMany(
+            Trip::class,
+            'route_id'
         );
     }
 }
