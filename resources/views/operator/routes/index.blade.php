@@ -22,7 +22,6 @@
         "
     >
         <div>
-
             <h1 style="margin:0 0 6px;">
                 Bus Route Services
             </h1>
@@ -38,7 +37,6 @@
                 Road ways are fixed by the System Administrator.
                 You can manage booking points and service times for each bus.
             </p>
-
         </div>
 
         <a
@@ -47,20 +45,17 @@
         >
             + Add Bus Service
         </a>
-
     </div>
 
 
     {{-- ============================================================
-         SUCCESS
+         SUCCESS MESSAGE
     ============================================================ --}}
 
     @if(session('success'))
-
         <div class="alert alert-success">
             {{ session('success') }}
         </div>
-
     @endif
 
 
@@ -69,37 +64,109 @@
     ============================================================ --}}
 
     @if($errors->any())
-
         <div class="alert alert-danger">
-
             <ul style="margin:0;">
-
                 @foreach($errors->all() as $error)
-
                     <li>
                         {{ $error }}
                     </li>
-
                 @endforeach
-
             </ul>
-
         </div>
-
     @endif
 
 
     {{-- ============================================================
-         SERVICES
+         BUS ROUTE SERVICES
     ============================================================ --}}
 
     @forelse($services as $service)
 
+        @php
+            /*
+            |--------------------------------------------------------------------------
+            | Safe Service Values
+            |--------------------------------------------------------------------------
+            |
+            | Supports both old and new controller aliases.
+            |
+            */
+
+            $serviceId =
+                $service->fixed_service_id
+                ?? $service->id
+                ?? null;
+
+            $routeOrigin =
+                $service->route_origin
+                ?? $service->origin
+                ?? '-';
+
+            $routeDestination =
+                $service->route_destination
+                ?? $service->destination
+                ?? '-';
+
+            $routeNumber =
+                $service->route_number
+                ?? '-';
+
+            $routeName =
+                $service->route_name
+                ?? null;
+
+            $busNumber =
+                $service->bus_number
+                ?? '-';
+
+            $busName =
+                $service->bus_name
+                ?? null;
+
+            $serviceName =
+                $service->service_name
+                ?? null;
+
+            $distanceKm =
+                $service->route_distance_km
+                ?? $service->distance_km
+                ?? null;
+
+            $durationMinutes =
+                $service->route_duration_minutes
+                ?? $service->duration_minutes
+                ?? null;
+
+            $isActive =
+                (bool) (
+                    $service->is_active
+                    ?? false
+                );
+
+            $isPublished =
+                (bool) (
+                    $service->is_published
+                    ?? false
+                );
+
+            $startingStops =
+                $service->starting_booking_stops
+                ?? $service->starting_stops
+                ?? [];
+
+            $returnStops =
+                $service->return_booking_stops
+                ?? $service->return_stops
+                ?? [];
+        @endphp
+
+
         <div
             class="card"
-            style="margin-bottom:18px;"
+            style="
+                margin-bottom:18px;
+            "
         >
-
             <div class="card-body">
 
                 {{-- ====================================================
@@ -117,15 +184,14 @@
                 >
 
                     <div>
-
                         <h3
                             style="
                                 margin:0 0 8px;
                             "
                         >
-                            {{ $service->origin }}
-                            →
-                            {{ $service->destination }}
+                            {{ $routeOrigin }}
+                            ↔
+                            {{ $routeDestination }}
                         </h3>
 
 
@@ -144,8 +210,19 @@
                                     Route:
                                 </strong>
 
-                                {{ $service->route_number ?: '-' }}
+                                {{ $routeNumber }}
                             </div>
+
+
+                            @if(!empty($routeName))
+                                <div>
+                                    <strong>
+                                        Route Name:
+                                    </strong>
+
+                                    {{ $routeName }}
+                                </div>
+                            @endif
 
 
                             <div>
@@ -153,41 +230,59 @@
                                     Bus:
                                 </strong>
 
-                                {{ $service->bus_number ?: '-' }}
+                                {{ $busNumber }}
+
+                                @if(!empty($busName))
+                                    - {{ $busName }}
+                                @endif
                             </div>
 
 
-                            @if(!empty($service->service_name))
-
+                            @if(!empty($serviceName))
                                 <div>
                                     <strong>
                                         Service:
                                     </strong>
 
-                                    {{ $service->service_name }}
+                                    {{ $serviceName }}
                                 </div>
-
                             @endif
 
 
-                            @if($service->distance_km !== null)
-
+                            @if($distanceKm !== null)
                                 <div>
                                     <strong>
                                         Distance:
                                     </strong>
 
-                                    {{ number_format(
-                                        (float) $service->distance_km,
-                                        1
-                                    ) }}
+                                    {{
+                                        number_format(
+                                            (float) $distanceKm,
+                                            1
+                                        )
+                                    }}
                                     km
                                 </div>
+                            @endif
 
+
+                            @if($durationMinutes !== null)
+                                <div>
+                                    <strong>
+                                        Duration:
+                                    </strong>
+
+                                    {{ (int) $durationMinutes }}
+                                    min
+                                </div>
                             @endif
 
                         </div>
 
+
+                        {{-- ============================================
+                             STATUS
+                        ============================================ --}}
 
                         <div
                             style="
@@ -198,8 +293,7 @@
                             "
                         >
 
-                            @if($service->is_active)
-
+                            @if($isActive)
                                 <span
                                     style="
                                         display:inline-block;
@@ -213,9 +307,7 @@
                                 >
                                     Active
                                 </span>
-
                             @else
-
                                 <span
                                     style="
                                         display:inline-block;
@@ -229,12 +321,10 @@
                                 >
                                     Inactive
                                 </span>
-
                             @endif
 
 
-                            @if($service->is_published)
-
+                            @if($isPublished)
                                 <span
                                     style="
                                         display:inline-block;
@@ -248,9 +338,7 @@
                                 >
                                     Published
                                 </span>
-
                             @else
-
                                 <span
                                     style="
                                         display:inline-block;
@@ -264,11 +352,9 @@
                                 >
                                     Not Published
                                 </span>
-
                             @endif
 
                         </div>
-
                     </div>
 
 
@@ -284,41 +370,43 @@
                         "
                     >
 
-                        <a
-                            href="{{ route(
-                                'operator.routes.edit',
-                                $service->id
-                            ) }}"
-                            class="btn btn-outline-primary"
-                        >
-                            Edit Service
-                        </a>
+                        @if($serviceId)
 
-
-                        <form
-                            method="POST"
-                            action="{{ route(
-                                'operator.routes.destroy',
-                                $service->id
-                            ) }}"
-                            onsubmit="
-                                return confirm(
-                                    'Remove this bus route service?'
-                                );
-                            "
-                        >
-
-                            @csrf
-                            @method('DELETE')
-
-                            <button
-                                type="submit"
-                                class="btn btn-outline-danger"
+                            <a
+                                href="{{ route(
+                                    'operator.routes.edit',
+                                    $serviceId
+                                ) }}"
+                                class="btn btn-outline-primary"
                             >
-                                Delete Service
-                            </button>
+                                Edit Service
+                            </a>
 
-                        </form>
+
+                            <form
+                                method="POST"
+                                action="{{ route(
+                                    'operator.routes.destroy',
+                                    $serviceId
+                                ) }}"
+                                onsubmit="
+                                    return confirm(
+                                        'Remove this bus route service?'
+                                    );
+                                "
+                            >
+                                @csrf
+                                @method('DELETE')
+
+                                <button
+                                    type="submit"
+                                    class="btn btn-outline-danger"
+                                >
+                                    Delete Service
+                                </button>
+                            </form>
+
+                        @endif
 
                     </div>
 
@@ -351,28 +439,37 @@
                         Master Route
                     </div>
 
+
                     <div
                         style="
                             color:#667085;
                             font-size:13px;
                         "
                     >
-                        Route
-                        {{ $service->route_number ?: '-' }}
-                        •
-                        {{ $service->origin }}
-                        →
-                        {{ $service->destination }}
+                        Route {{ $routeNumber }}
 
-                        @if($service->distance_km !== null)
+                        • {{ $routeOrigin }}
+
+                        ↔ {{ $routeDestination }}
+
+                        @if($distanceKm !== null)
                             •
-                            {{ number_format(
-                                (float) $service->distance_km,
-                                1
-                            ) }}
+                            {{
+                                number_format(
+                                    (float) $distanceKm,
+                                    1
+                                )
+                            }}
                             km
                         @endif
+
+                        @if($durationMinutes !== null)
+                            •
+                            {{ (int) $durationMinutes }}
+                            min
+                        @endif
                     </div>
+
 
                     <div
                         style="
@@ -382,6 +479,7 @@
                         "
                     >
                         Road way is controlled by the System Administrator.
+                        The same Master Route is used for both Starting and Return services.
                     </div>
 
                 </div>
@@ -391,42 +489,58 @@
                      STARTING BOOKING POINTS
                 ==================================================== --}}
 
-                <div style="margin-bottom:22px;">
+                <div
+                    style="
+                        margin-bottom:22px;
+                    "
+                >
 
-                    <h4 style="margin-bottom:10px;">
-                        Starting Booking Points
-                    </h4>
+                    <div
+                        style="
+                            display:flex;
+                            justify-content:space-between;
+                            align-items:center;
+                            gap:10px;
+                            flex-wrap:wrap;
+                            margin-bottom:10px;
+                        "
+                    >
+                        <h4 style="margin:0;">
+                            Starting Booking Points
+                        </h4>
 
-
-                    @if(
-                        !empty($service->starting_booking_stops)
-                        &&
-                        count($service->starting_booking_stops)
-                    )
-
-                        <div
+                        <span
                             style="
-                                overflow-x:auto;
+                                color:#667085;
+                                font-size:13px;
                             "
                         >
+                            {{ $routeOrigin }}
+                            →
+                            {{ $routeDestination }}
+                        </span>
+                    </div>
+
+
+                    @if(count($startingStops))
+
+                        <div style="overflow-x:auto;">
 
                             <table
                                 style="
                                     width:100%;
                                     border-collapse:collapse;
-                                    min-width:650px;
+                                    min-width:760px;
                                 "
                             >
 
                                 <thead>
-
                                     <tr
                                         style="
                                             background:#f7f8fa;
                                             text-align:left;
                                         "
                                     >
-
                                         <th
                                             style="
                                                 padding:10px;
@@ -450,10 +564,10 @@
                                             style="
                                                 padding:10px;
                                                 border-bottom:1px solid #e4e7ec;
-                                                width:150px;
+                                                width:140px;
                                             "
                                         >
-                                            Time
+                                            Arrival
                                         </th>
 
                                         <th
@@ -463,27 +577,65 @@
                                                 width:140px;
                                             "
                                         >
+                                            Departure
+                                        </th>
+
+                                        <th
+                                            style="
+                                                padding:10px;
+                                                border-bottom:1px solid #e4e7ec;
+                                                width:120px;
+                                            "
+                                        >
                                             Fare Stage
                                         </th>
 
+                                        <th
+                                            style="
+                                                padding:10px;
+                                                border-bottom:1px solid #e4e7ec;
+                                                width:120px;
+                                            "
+                                        >
+                                            Distance
+                                        </th>
                                     </tr>
-
                                 </thead>
 
 
                                 <tbody>
 
-                                    @foreach(
-                                        $service->starting_booking_stops
-                                        as $stop
-                                    )
+                                    @foreach($startingStops as $stop)
 
                                         @php
-                                            $time =
+                                            $stopName =
+                                                $stop->route_stop_name
+                                                ?? $stop->stop_name
+                                                ?? $stop->name
+                                                ?? '-';
+
+                                            $stopOrder =
+                                                $stop->stop_order
+                                                ?? '-';
+
+                                            $arrivalTime =
+                                                $stop->arrival_time
+                                                ?? null;
+
+                                            $departureTime =
                                                 $stop->departure_time
-                                                ?? $stop->arrival_time
+                                                ?? null;
+
+                                            $fareStage =
+                                                $stop->fare_stage_no
+                                                ?? null;
+
+                                            $stopDistance =
+                                                $stop->distance_from_origin_km
+                                                ?? $stop->distance_from_origin
                                                 ?? null;
                                         @endphp
+
 
                                         <tr>
 
@@ -493,7 +645,7 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-                                                {{ $stop->stop_order }}
+                                                {{ $stopOrder }}
                                             </td>
 
 
@@ -504,7 +656,7 @@
                                                     font-weight:600;
                                                 "
                                             >
-                                                {{ $stop->stop_name }}
+                                                {{ $stopName }}
                                             </td>
 
 
@@ -514,19 +666,15 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-
-                                                @if($time)
-
+                                                @if($arrivalTime)
                                                     {{
                                                         \Carbon\Carbon::parse(
-                                                            $time
+                                                            $arrivalTime
                                                         )->format('h:i A')
                                                     }}
-
                                                 @else
                                                     -
                                                 @endif
-
                                             </td>
 
 
@@ -536,7 +684,45 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-                                                {{ $stop->fare_stage_no ?: '-' }}
+                                                @if($departureTime)
+                                                    {{
+                                                        \Carbon\Carbon::parse(
+                                                            $departureTime
+                                                        )->format('h:i A')
+                                                    }}
+                                                @else
+                                                    -
+                                                @endif
+                                            </td>
+
+
+                                            <td
+                                                style="
+                                                    padding:10px;
+                                                    border-bottom:1px solid #f0f2f5;
+                                                "
+                                            >
+                                                {{ $fareStage ?? '-' }}
+                                            </td>
+
+
+                                            <td
+                                                style="
+                                                    padding:10px;
+                                                    border-bottom:1px solid #f0f2f5;
+                                                "
+                                            >
+                                                @if($stopDistance !== null)
+                                                    {{
+                                                        number_format(
+                                                            (float) $stopDistance,
+                                                            1
+                                                        )
+                                                    }}
+                                                    km
+                                                @else
+                                                    -
+                                                @endif
                                             </td>
 
                                         </tr>
@@ -571,40 +757,52 @@
 
                 <div>
 
-                    <h4 style="margin-bottom:10px;">
-                        Return Booking Points
-                    </h4>
+                    <div
+                        style="
+                            display:flex;
+                            justify-content:space-between;
+                            align-items:center;
+                            gap:10px;
+                            flex-wrap:wrap;
+                            margin-bottom:10px;
+                        "
+                    >
+                        <h4 style="margin:0;">
+                            Return Booking Points
+                        </h4>
 
-
-                    @if(
-                        !empty($service->return_booking_stops)
-                        &&
-                        count($service->return_booking_stops)
-                    )
-
-                        <div
+                        <span
                             style="
-                                overflow-x:auto;
+                                color:#667085;
+                                font-size:13px;
                             "
                         >
+                            {{ $routeDestination }}
+                            →
+                            {{ $routeOrigin }}
+                        </span>
+                    </div>
+
+
+                    @if(count($returnStops))
+
+                        <div style="overflow-x:auto;">
 
                             <table
                                 style="
                                     width:100%;
                                     border-collapse:collapse;
-                                    min-width:650px;
+                                    min-width:760px;
                                 "
                             >
 
                                 <thead>
-
                                     <tr
                                         style="
                                             background:#f7f8fa;
                                             text-align:left;
                                         "
                                     >
-
                                         <th
                                             style="
                                                 padding:10px;
@@ -628,10 +826,10 @@
                                             style="
                                                 padding:10px;
                                                 border-bottom:1px solid #e4e7ec;
-                                                width:150px;
+                                                width:140px;
                                             "
                                         >
-                                            Time
+                                            Arrival
                                         </th>
 
                                         <th
@@ -641,27 +839,65 @@
                                                 width:140px;
                                             "
                                         >
+                                            Departure
+                                        </th>
+
+                                        <th
+                                            style="
+                                                padding:10px;
+                                                border-bottom:1px solid #e4e7ec;
+                                                width:120px;
+                                            "
+                                        >
                                             Fare Stage
                                         </th>
 
+                                        <th
+                                            style="
+                                                padding:10px;
+                                                border-bottom:1px solid #e4e7ec;
+                                                width:120px;
+                                            "
+                                        >
+                                            Distance
+                                        </th>
                                     </tr>
-
                                 </thead>
 
 
                                 <tbody>
 
-                                    @foreach(
-                                        $service->return_booking_stops
-                                        as $stop
-                                    )
+                                    @foreach($returnStops as $stop)
 
                                         @php
-                                            $time =
+                                            $stopName =
+                                                $stop->route_stop_name
+                                                ?? $stop->stop_name
+                                                ?? $stop->name
+                                                ?? '-';
+
+                                            $stopOrder =
+                                                $stop->stop_order
+                                                ?? '-';
+
+                                            $arrivalTime =
+                                                $stop->arrival_time
+                                                ?? null;
+
+                                            $departureTime =
                                                 $stop->departure_time
-                                                ?? $stop->arrival_time
+                                                ?? null;
+
+                                            $fareStage =
+                                                $stop->fare_stage_no
+                                                ?? null;
+
+                                            $stopDistance =
+                                                $stop->distance_from_origin_km
+                                                ?? $stop->distance_from_origin
                                                 ?? null;
                                         @endphp
+
 
                                         <tr>
 
@@ -671,7 +907,7 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-                                                {{ $stop->stop_order }}
+                                                {{ $stopOrder }}
                                             </td>
 
 
@@ -682,7 +918,7 @@
                                                     font-weight:600;
                                                 "
                                             >
-                                                {{ $stop->stop_name }}
+                                                {{ $stopName }}
                                             </td>
 
 
@@ -692,19 +928,15 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-
-                                                @if($time)
-
+                                                @if($arrivalTime)
                                                     {{
                                                         \Carbon\Carbon::parse(
-                                                            $time
+                                                            $arrivalTime
                                                         )->format('h:i A')
                                                     }}
-
                                                 @else
                                                     -
                                                 @endif
-
                                             </td>
 
 
@@ -714,7 +946,45 @@
                                                     border-bottom:1px solid #f0f2f5;
                                                 "
                                             >
-                                                {{ $stop->fare_stage_no ?: '-' }}
+                                                @if($departureTime)
+                                                    {{
+                                                        \Carbon\Carbon::parse(
+                                                            $departureTime
+                                                        )->format('h:i A')
+                                                    }}
+                                                @else
+                                                    -
+                                                @endif
+                                            </td>
+
+
+                                            <td
+                                                style="
+                                                    padding:10px;
+                                                    border-bottom:1px solid #f0f2f5;
+                                                "
+                                            >
+                                                {{ $fareStage ?? '-' }}
+                                            </td>
+
+
+                                            <td
+                                                style="
+                                                    padding:10px;
+                                                    border-bottom:1px solid #f0f2f5;
+                                                "
+                                            >
+                                                @if($stopDistance !== null)
+                                                    {{
+                                                        number_format(
+                                                            (float) $stopDistance,
+                                                            1
+                                                        )
+                                                    }}
+                                                    km
+                                                @else
+                                                    -
+                                                @endif
                                             </td>
 
                                         </tr>
@@ -743,7 +1013,6 @@
                 </div>
 
             </div>
-
         </div>
 
     @empty
@@ -752,9 +1021,7 @@
              EMPTY STATE
         ============================================================ --}}
 
-        <div
-            class="card"
-        >
+        <div class="card">
 
             <div
                 class="card-body"
@@ -782,7 +1049,7 @@
                         margin-bottom:18px;
                     "
                 >
-                    Select one of the available master routes and configure
+                    Select one of the available Master Routes and configure
                     the booking points and service times for your bus.
                 </div>
 
