@@ -27,7 +27,7 @@ class AdminFixedScheduleController extends Controller
                 'r.origin as route_origin',
                 'r.destination as route_destination',
                 'b.bus_number',
-                'o.name as operator_name'
+                'o.company_name as operator_name'
             )
             ->orderByDesc('fs.id')
             ->get();
