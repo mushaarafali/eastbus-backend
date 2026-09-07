@@ -299,12 +299,8 @@ class LocationSeeder extends Seeder
                     'name' => trim($name),
                 ],
                 [
-                    'district' => '',
-                    'province' => '',
-                    'latitude' => 0,
-                    'longitude' => 0,
                     'is_active' => true,
-                ],
+                ]
             );
         }
     }

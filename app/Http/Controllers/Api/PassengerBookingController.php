@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Location;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -10,113 +11,74 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
+
 class PassengerBookingController extends Controller
 {
     private const MAX_SEATS = 6;
     private const HOLD_MINUTES = 10;
     private const MIN_JOURNEY_KM = 50;
 
-    /*
-    |--------------------------------------------------------------------------
-    | Passenger Search Locations
-    |--------------------------------------------------------------------------
-    |
-    | Only BOOKABLE Operator services are used here.
-    |
-    | Admin fixed daily schedules:
-    |
-    | operator_id = NULL
-    | bus_id      = NULL
-    |
-    | are excluded.
-    |
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | Passenger Search Locations
+        |--------------------------------------------------------------------------
+        |
+        | All active locations from the locations table are available for
+        | passenger From / To autocomplete.
+        |
+        | Search is case-insensitive.
+        |
+        | Examples:
+        |   kalmunai  -> Kalmunai
+        |   KALMUNAI  -> Kalmunai
+        |   Kalmu     -> Kalmunai
+        |   batt      -> Batticaloa
+        |
+        */
 
-    public function locations(Request $request)
-    {
-        $data = $request->validate([
-            'search' => [
-                'nullable',
-                'string',
-                'max:100',
-            ],
-        ]);
+        public function locations(Request $request)
+        {
+            $data = $request->validate([
+                'search' => [
+                    'nullable',
+                    'string',
+                    'max:100',
+                ],
+            ]);
 
-        $term = trim(
-            (string) ($data['search'] ?? '')
-        );
-
-        $query = DB::table('fixed_service_stops as fss')
-            ->join(
-                'fixed_services as fs',
-                'fs.id',
-                '=',
-                'fss.fixed_service_id'
-            )
-            ->join(
-                'route_stops as rs',
-                'rs.id',
-                '=',
-                'fss.route_stop_id'
-            )
-            ->join(
-                'routes as r',
-                'r.id',
-                '=',
-                'fs.route_id'
-            )
-
-            /*
-             * Operator bookable service only.
-             */
-            ->whereNotNull('fs.operator_id')
-            ->whereNotNull('fs.bus_id')
-
-            ->where(
-                'fs.is_active',
-                true
-            )
-            ->where(
-                'fs.is_published',
-                true
-            )
-            ->where(
-                'r.is_active',
-                true
-            )
-            ->where(function ($query) {
-                $query
-                    ->where(
-                        'fss.boarding_allowed',
-                        true
-                    )
-                    ->orWhere(
-                        'fss.dropoff_allowed',
-                        true
-                    );
-            })
-            ->select(
-                'rs.name'
-            )
-            ->distinct();
-
-        if ($term !== '') {
-            $query->where(
-                'rs.name',
-                'like',
-                $term . '%'
+            $term = trim(
+                (string) ($data['search'] ?? '')
             );
-        }
 
-        return response()->json([
-            'success' => true,
+            $query = Location::query()
+                ->where(
+                    'is_active',
+                    true
+                );
 
-            'locations' => $query
-                ->orderBy('rs.name')
+            if ($term !== '') {
+                $query->whereRaw(
+                    'LOWER(name) LIKE ?',
+                    [
+                        '%' . mb_strtolower($term) . '%',
+                    ]
+                );
+            }
+
+            $locations = $query
+                ->select([
+                    'id',
+                    'name',
+                ])
+                ->orderBy('name')
                 ->limit(50)
-                ->get(),
-        ]);
-    }
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'locations' => $locations,
+            ]);
+        }
 
     /*
     |--------------------------------------------------------------------------
