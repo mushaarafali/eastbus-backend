@@ -1,46 +1,17 @@
 @extends('layouts.app')
 
-@section(
-    'title',
-    $service ? 'Edit Daily Service Bus' : 'Add Daily Service Bus'
-)
-
-@section(
-    'header',
-    $service ? 'Edit Daily Service Bus' : 'Add Daily Service Bus'
-)
+@section('title', $service ? 'Edit Daily Service Bus' : 'Add Daily Service Bus')
+@section('header', $service ? 'Edit Daily Service Bus' : 'Add Daily Service Bus')
 
 @section('content')
 
 @php
     $isEdit = $service !== null;
 
-    /*
-    |--------------------------------------------------------------------------
-    | Selected Values
-    |--------------------------------------------------------------------------
-    */
-
-    $selectedOperatorId = old(
-        'operator_id',
-        $service->operator_id ?? ''
-    );
-
-    $selectedBusId = old(
-        'bus_id',
-        $service->bus_id ?? ''
-    );
-
     $selectedRouteId = old(
         'route_id',
         $service->route_id ?? ''
     );
-
-    /*
-    |--------------------------------------------------------------------------
-    | Starting Rows
-    |--------------------------------------------------------------------------
-    */
 
     $startRows = old('starting_stops');
 
@@ -62,24 +33,10 @@
                         !empty($stop->departure_time)
                             ? substr($stop->departure_time, 0, 5)
                             : '',
-
-                    'boarding_allowed' =>
-                        $stop->boarding_allowed
-                        ?? true,
-
-                    'dropoff_allowed' =>
-                        $stop->dropoff_allowed
-                        ?? true,
                 ];
             })
             ->toArray();
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Return Rows
-    |--------------------------------------------------------------------------
-    */
 
     $returnRows = old('return_stops');
 
@@ -101,24 +58,10 @@
                         !empty($stop->departure_time)
                             ? substr($stop->departure_time, 0, 5)
                             : '',
-
-                    'boarding_allowed' =>
-                        $stop->boarding_allowed
-                        ?? true,
-
-                    'dropoff_allowed' =>
-                        $stop->dropoff_allowed
-                        ?? true,
                 ];
             })
             ->toArray();
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Default Rows
-    |--------------------------------------------------------------------------
-    */
 
     if (!$startRows) {
         $startRows = [
@@ -126,15 +69,11 @@
                 'route_stop_id' => '',
                 'arrival_time' => '',
                 'departure_time' => '',
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
             ],
             [
                 'route_stop_id' => '',
                 'arrival_time' => '',
                 'departure_time' => '',
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
             ],
         ];
     }
@@ -145,24 +84,16 @@
                 'route_stop_id' => '',
                 'arrival_time' => '',
                 'departure_time' => '',
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
             ],
             [
                 'route_stop_id' => '',
                 'arrival_time' => '',
                 'departure_time' => '',
-                'boarding_allowed' => 1,
-                'dropoff_allowed' => 1,
             ],
         ];
     }
 @endphp
 
-
-{{-- ================================================================ --}}
-{{-- Messages                                                         --}}
-{{-- ================================================================ --}}
 
 @if($errors->any())
     <div class="flash error" style="margin-bottom:16px;">
@@ -176,6 +107,7 @@
     </div>
 @endif
 
+
 @if(session('success'))
     <div class="flash success" style="margin-bottom:16px;">
         {{ session('success') }}
@@ -185,16 +117,9 @@
 
 <form
     method="POST"
-    action="{{
-        $isEdit
-            ? route(
-                'admin.fixed-schedules.update',
-                $service->id
-            )
-            : route(
-                'admin.fixed-schedules.store'
-            )
-    }}"
+    action="{{ $isEdit
+        ? route('admin.fixed-schedules.update', $service->id)
+        : route('admin.fixed-schedules.store') }}"
     autocomplete="off"
 >
     @csrf
@@ -205,7 +130,7 @@
 
 
     {{-- ============================================================ --}}
-    {{-- Service Details                                              --}}
+    {{-- Bus / Route Details                                          --}}
     {{-- ============================================================ --}}
 
     <div class="card">
@@ -213,17 +138,12 @@
 
             <div style="margin-bottom:18px;">
                 <h2 style="margin-bottom:5px;">
-                    {{
-                        $isEdit
-                            ? 'Edit Daily Service Bus'
-                            : 'Add Daily Service Bus'
-                    }}
+                    {{ $isEdit ? 'Edit Daily Service Bus' : 'Add Daily Service Bus' }}
                 </h2>
 
                 <p style="margin:0;color:#667085;">
-                    Select the operator, bus and Master Route.
-                    Road-way stops will be loaded automatically
-                    from the selected Master Route.
+                    Create an information-only daily bus timetable.
+                    Select a Master Route and use its road-way stops.
                 </p>
             </div>
 
@@ -231,85 +151,76 @@
             <div
                 style="
                     display:grid;
-                    grid-template-columns:
-                        repeat(2, minmax(0, 1fr));
+                    grid-template-columns:repeat(2, minmax(0, 1fr));
                     gap:14px;
                 "
             >
 
-                {{-- Operator --}}
+                {{-- Bus Name --}}
 
                 <div>
-                    <label for="operator_id">
-                        Bus Operator *
+                    <label for="bus_name">
+                        Bus Name *
                     </label>
 
-                    <select
-                        id="operator_id"
-                        name="operator_id"
+                    <input
+                        id="bus_name"
                         class="form-control"
+                        type="text"
+                        name="bus_name"
+                        maxlength="150"
+                        value="{{ old(
+                            'bus_name',
+                            $service->bus_name ?? ''
+                        ) }}"
+                        placeholder="Example: HEMA EXPRESS"
                         required
                     >
-                        <option value="">
-                            -- Select Operator --
-                        </option>
-
-                        @foreach($operators as $operator)
-                            <option
-                                value="{{ $operator->id }}"
-                                @selected(
-                                    (string) $selectedOperatorId
-                                    ===
-                                    (string) $operator->id
-                                )
-                            >
-                                {{ $operator->company_name }}
-                            </option>
-                        @endforeach
-                    </select>
                 </div>
 
 
-                {{-- Bus --}}
+                {{-- Bus Number --}}
 
                 <div>
-                    <label for="bus_id">
-                        Bus *
+                    <label for="bus_number">
+                        Bus Number
                     </label>
 
-                    <select
-                        id="bus_id"
-                        name="bus_id"
+                    <input
+                        id="bus_number"
                         class="form-control"
+                        type="text"
+                        name="bus_number"
+                        maxlength="100"
+                        value="{{ old(
+                            'bus_number',
+                            $service->bus_number ?? ''
+                        ) }}"
+                        placeholder="Example: NB-1234"
+                    >
+                </div>
+
+
+                {{-- Contact Number --}}
+
+                <div>
+                    <label for="contact_number">
+                        Contact Number *
+                    </label>
+
+                    <input
+                        id="contact_number"
+                        class="form-control"
+                        type="text"
+                        name="contact_number"
+                        maxlength="30"
+                        value="{{ old(
+                            'contact_number',
+                            $service->contact_number_1 ?? ''
+                        ) }}"
+                        placeholder="Example: 0771234567"
                         required
                     >
-                        <option value="">
-                            -- Select Bus --
-                        </option>
-
-                        @foreach($buses as $bus)
-                            <option
-                                value="{{ $bus->id }}"
-                                data-operator-id="{{ $bus->operator_id }}"
-                                @selected(
-                                    (string) $selectedBusId
-                                    ===
-                                    (string) $bus->id
-                                )
-                            >
-                                {{ $bus->bus_number }}
-
-                                @if(!empty($bus->bus_name))
-                                    - {{ $bus->bus_name }}
-                                @endif
-                            </option>
-                        @endforeach
-                    </select>
-
-                    <small style="color:#667085;">
-                        Only buses belonging to the selected operator
-                        should be used.
-                    </small>
                 </div>
 
 
@@ -349,38 +260,12 @@
                     </select>
 
                     <small style="color:#667085;">
-                        Starting and Return stop dropdowns are loaded
-                        from this Master Route.
+                        Stop dropdowns are loaded from this Master Route.
                     </small>
-                </div>
-
-
-                {{-- Service Name --}}
-
-                <div>
-                    <label for="service_name">
-                        Service Name
-                    </label>
-
-                    <input
-                        id="service_name"
-                        class="form-control"
-                        name="service_name"
-                        maxlength="150"
-                        value="{{
-                            old(
-                                'service_name',
-                                $service->service_name ?? ''
-                            )
-                        }}"
-                        placeholder="Example: HEMA EXPRESS"
-                    >
                 </div>
 
             </div>
 
-
-            {{-- Route Information --}}
 
             <div
                 id="selected-route-info"
@@ -423,6 +308,7 @@
                     Published
                 </label>
 
+
                 <label>
                     <input
                         type="checkbox"
@@ -447,7 +333,7 @@
 
 
     {{-- ============================================================ --}}
-    {{-- Starting Service                                             --}}
+    {{-- Starting Daily Service                                       --}}
     {{-- ============================================================ --}}
 
     <div class="card" style="margin-top:16px;">
@@ -467,8 +353,7 @@
                     </h3>
 
                     <small style="color:#667085;">
-                        Select booking points from the Master Route
-                        in forward road-way order.
+                        Select road-way stops in forward Master Route order.
                     </small>
                 </div>
 
@@ -501,8 +386,7 @@
                         <div
                             style="
                                 display:grid;
-                                grid-template-columns:
-                                    60px 2fr 1fr 1fr 90px;
+                                grid-template-columns:60px 2fr 1fr 1fr 90px;
                                 gap:8px;
                                 align-items:end;
                             "
@@ -527,9 +411,7 @@
                                 <select
                                     class="form-control route-stop-select"
                                     name="starting_stops[{{ $i }}][route_stop_id]"
-                                    data-selected="{{
-                                        $stop['route_stop_id'] ?? ''
-                                    }}"
+                                    data-selected="{{ $stop['route_stop_id'] ?? '' }}"
                                     required
                                 >
                                     <option value="">
@@ -548,33 +430,18 @@
                                         >
                                             {{ $routeStop->name }}
 
-                                            @if(
-                                                isset(
-                                                    $routeStop
-                                                        ->distance_from_origin_km
-                                                )
-                                            )
+                                            @if(isset($routeStop->distance_from_origin_km))
                                                 -
-                                                {{
-                                                    number_format(
-                                                        $routeStop
-                                                            ->distance_from_origin_km,
-                                                        2
-                                                    )
-                                                }} km
+                                                {{ number_format(
+                                                    $routeStop->distance_from_origin_km,
+                                                    2
+                                                ) }}
+                                                km
                                             @endif
 
-                                            @if(
-                                                !empty(
-                                                    $routeStop
-                                                        ->fare_stage_no
-                                                )
-                                            )
+                                            @if(!empty($routeStop->fare_stage_no))
                                                 - Stage
-                                                {{
-                                                    $routeStop
-                                                        ->fare_stage_no
-                                                }}
+                                                {{ $routeStop->fare_stage_no }}
                                             @endif
                                         </option>
                                     @endforeach
@@ -591,9 +458,7 @@
                                     class="form-control arrival-time"
                                     type="time"
                                     name="starting_stops[{{ $i }}][arrival_time]"
-                                    value="{{
-                                        $stop['arrival_time'] ?? ''
-                                    }}"
+                                    value="{{ $stop['arrival_time'] ?? '' }}"
                                 >
                             </div>
 
@@ -607,9 +472,7 @@
                                     class="form-control departure-time"
                                     type="time"
                                     name="starting_stops[{{ $i }}][departure_time]"
-                                    value="{{
-                                        $stop['departure_time'] ?? ''
-                                    }}"
+                                    value="{{ $stop['departure_time'] ?? '' }}"
                                 >
                             </div>
 
@@ -617,79 +480,11 @@
                             <div>
                                 <button
                                     type="button"
-                                    class="
-                                        btn
-                                        btn-sm
-                                        btn-outline-danger
-                                        remove-row
-                                    "
+                                    class="btn btn-sm btn-outline-danger remove-row"
                                 >
                                     Remove
                                 </button>
                             </div>
-
-                        </div>
-
-
-                        <div
-                            style="
-                                display:flex;
-                                gap:20px;
-                                flex-wrap:wrap;
-                                margin-top:12px;
-                            "
-                        >
-
-                            <label>
-                                <input
-                                    type="hidden"
-                                    name="starting_stops[{{ $i }}][boarding_allowed]"
-                                    value="0"
-                                    class="boarding-hidden"
-                                >
-
-                                <input
-                                    type="checkbox"
-                                    name="starting_stops[{{ $i }}][boarding_allowed]"
-                                    value="1"
-                                    class="boarding-check"
-                                    {{
-                                        !empty(
-                                            $stop['boarding_allowed']
-                                        )
-                                            ? 'checked'
-                                            : ''
-                                    }}
-                                >
-
-                                Boarding Allowed
-                            </label>
-
-
-                            <label>
-                                <input
-                                    type="hidden"
-                                    name="starting_stops[{{ $i }}][dropoff_allowed]"
-                                    value="0"
-                                    class="dropoff-hidden"
-                                >
-
-                                <input
-                                    type="checkbox"
-                                    name="starting_stops[{{ $i }}][dropoff_allowed]"
-                                    value="1"
-                                    class="dropoff-check"
-                                    {{
-                                        !empty(
-                                            $stop['dropoff_allowed']
-                                        )
-                                            ? 'checked'
-                                            : ''
-                                    }}
-                                >
-
-                                Drop-off Allowed
-                            </label>
 
                         </div>
 
@@ -703,7 +498,7 @@
 
 
     {{-- ============================================================ --}}
-    {{-- Return Service                                               --}}
+    {{-- Return Daily Service                                         --}}
     {{-- ============================================================ --}}
 
     <div class="card" style="margin-top:16px;">
@@ -723,8 +518,7 @@
                     </h3>
 
                     <small style="color:#667085;">
-                        Select booking points from the same
-                        Master Route in reverse order.
+                        Select road-way stops in reverse Master Route order.
                     </small>
                 </div>
 
@@ -757,8 +551,7 @@
                         <div
                             style="
                                 display:grid;
-                                grid-template-columns:
-                                    60px 2fr 1fr 1fr 90px;
+                                grid-template-columns:60px 2fr 1fr 1fr 90px;
                                 gap:8px;
                                 align-items:end;
                             "
@@ -783,9 +576,7 @@
                                 <select
                                     class="form-control route-stop-select"
                                     name="return_stops[{{ $i }}][route_stop_id]"
-                                    data-selected="{{
-                                        $stop['route_stop_id'] ?? ''
-                                    }}"
+                                    data-selected="{{ $stop['route_stop_id'] ?? '' }}"
                                     required
                                 >
                                     <option value="">
@@ -804,33 +595,18 @@
                                         >
                                             {{ $routeStop->name }}
 
-                                            @if(
-                                                isset(
-                                                    $routeStop
-                                                        ->distance_from_origin_km
-                                                )
-                                            )
+                                            @if(isset($routeStop->distance_from_origin_km))
                                                 -
-                                                {{
-                                                    number_format(
-                                                        $routeStop
-                                                            ->distance_from_origin_km,
-                                                        2
-                                                    )
-                                                }} km
+                                                {{ number_format(
+                                                    $routeStop->distance_from_origin_km,
+                                                    2
+                                                ) }}
+                                                km
                                             @endif
 
-                                            @if(
-                                                !empty(
-                                                    $routeStop
-                                                        ->fare_stage_no
-                                                )
-                                            )
+                                            @if(!empty($routeStop->fare_stage_no))
                                                 - Stage
-                                                {{
-                                                    $routeStop
-                                                        ->fare_stage_no
-                                                }}
+                                                {{ $routeStop->fare_stage_no }}
                                             @endif
                                         </option>
                                     @endforeach
@@ -847,9 +623,7 @@
                                     class="form-control arrival-time"
                                     type="time"
                                     name="return_stops[{{ $i }}][arrival_time]"
-                                    value="{{
-                                        $stop['arrival_time'] ?? ''
-                                    }}"
+                                    value="{{ $stop['arrival_time'] ?? '' }}"
                                 >
                             </div>
 
@@ -863,9 +637,7 @@
                                     class="form-control departure-time"
                                     type="time"
                                     name="return_stops[{{ $i }}][departure_time]"
-                                    value="{{
-                                        $stop['departure_time'] ?? ''
-                                    }}"
+                                    value="{{ $stop['departure_time'] ?? '' }}"
                                 >
                             </div>
 
@@ -873,79 +645,11 @@
                             <div>
                                 <button
                                     type="button"
-                                    class="
-                                        btn
-                                        btn-sm
-                                        btn-outline-danger
-                                        remove-row
-                                    "
+                                    class="btn btn-sm btn-outline-danger remove-row"
                                 >
                                     Remove
                                 </button>
                             </div>
-
-                        </div>
-
-
-                        <div
-                            style="
-                                display:flex;
-                                gap:20px;
-                                flex-wrap:wrap;
-                                margin-top:12px;
-                            "
-                        >
-
-                            <label>
-                                <input
-                                    type="hidden"
-                                    name="return_stops[{{ $i }}][boarding_allowed]"
-                                    value="0"
-                                    class="boarding-hidden"
-                                >
-
-                                <input
-                                    type="checkbox"
-                                    name="return_stops[{{ $i }}][boarding_allowed]"
-                                    value="1"
-                                    class="boarding-check"
-                                    {{
-                                        !empty(
-                                            $stop['boarding_allowed']
-                                        )
-                                            ? 'checked'
-                                            : ''
-                                    }}
-                                >
-
-                                Boarding Allowed
-                            </label>
-
-
-                            <label>
-                                <input
-                                    type="hidden"
-                                    name="return_stops[{{ $i }}][dropoff_allowed]"
-                                    value="0"
-                                    class="dropoff-hidden"
-                                >
-
-                                <input
-                                    type="checkbox"
-                                    name="return_stops[{{ $i }}][dropoff_allowed]"
-                                    value="1"
-                                    class="dropoff-check"
-                                    {{
-                                        !empty(
-                                            $stop['dropoff_allowed']
-                                        )
-                                            ? 'checked'
-                                            : ''
-                                    }}
-                                >
-
-                                Drop-off Allowed
-                            </label>
 
                         </div>
 
@@ -974,11 +678,9 @@
             class="btn btn-primary"
             type="submit"
         >
-            {{
-                $isEdit
-                    ? 'Update Daily Service Bus'
-                    : 'Create Daily Service Bus'
-            }}
+            {{ $isEdit
+                ? 'Update Daily Service'
+                : 'Create Daily Service' }}
         </button>
 
         <a
@@ -993,7 +695,7 @@
 
 
 {{-- ================================================================ --}}
-{{-- Dynamic Row Template                                             --}}
+{{-- Dynamic Stop Row Template                                        --}}
 {{-- ================================================================ --}}
 
 <template id="schedule-row-template">
@@ -1011,8 +713,7 @@
         <div
             style="
                 display:grid;
-                grid-template-columns:
-                    60px 2fr 1fr 1fr 90px;
+                grid-template-columns:60px 2fr 1fr 1fr 90px;
                 gap:8px;
                 align-items:end;
             "
@@ -1071,62 +772,12 @@
             <div>
                 <button
                     type="button"
-                    class="
-                        btn
-                        btn-sm
-                        btn-outline-danger
-                        remove-row
-                    "
+                    class="btn btn-sm btn-outline-danger remove-row"
                 >
                     Remove
                 </button>
             </div>
 
-        </div>
-
-
-        <div
-            style="
-                display:flex;
-                gap:20px;
-                flex-wrap:wrap;
-                margin-top:12px;
-            "
-        >
-            <label>
-                <input
-                    class="boarding-hidden"
-                    type="hidden"
-                    value="0"
-                >
-
-                <input
-                    class="boarding-check"
-                    type="checkbox"
-                    value="1"
-                    checked
-                >
-
-                Boarding Allowed
-            </label>
-
-
-            <label>
-                <input
-                    class="dropoff-hidden"
-                    type="hidden"
-                    value="0"
-                >
-
-                <input
-                    class="dropoff-check"
-                    type="checkbox"
-                    value="1"
-                    checked
-                >
-
-                Drop-off Allowed
-            </label>
         </div>
 
     </div>
@@ -1138,29 +789,13 @@
 (function () {
 
     const routeSelect =
-        document.getElementById(
-            'route_id'
-        );
-
-    const operatorSelect =
-        document.getElementById(
-            'operator_id'
-        );
-
-    const busSelect =
-        document.getElementById(
-            'bus_id'
-        );
+        document.getElementById('route_id');
 
     const routeInfo =
-        document.getElementById(
-            'selected-route-info'
-        );
+        document.getElementById('selected-route-info');
 
     const template =
-        document.getElementById(
-            'schedule-row-template'
-        );
+        document.getElementById('schedule-row-template');
 
     let masterRouteStops = [];
 
@@ -1183,7 +818,7 @@
 
     /*
     |--------------------------------------------------------------------------
-    | Build Route Stop Options
+    | Build Stop Dropdown
     |--------------------------------------------------------------------------
     */
 
@@ -1191,43 +826,38 @@
         let html =
             '<option value="">-- Select Stop --</option>';
 
-        masterRouteStops.forEach(
-            stop => {
-                const selected =
-                    String(stop.id)
-                    ===
-                    String(selectedId)
-                        ? ' selected'
-                        : '';
+        masterRouteStops.forEach(stop => {
 
-                const km =
-                    stop.distance_from_origin_km
-                    !== null
-                    &&
-                    stop.distance_from_origin_km
-                    !== undefined
-                        ? ` - ${Number(
-                            stop.distance_from_origin_km
-                        ).toFixed(2)} km`
-                        : '';
+            const selected =
+                String(stop.id) === String(selectedId)
+                    ? ' selected'
+                    : '';
 
-                const stage =
-                    stop.fare_stage_no
-                        ? ` - Stage ${stop.fare_stage_no}`
-                        : '';
+            const km =
+                stop.distance_from_origin_km !== null
+                &&
+                stop.distance_from_origin_km !== undefined
+                    ? ` - ${Number(
+                        stop.distance_from_origin_km
+                    ).toFixed(2)} km`
+                    : '';
 
-                html += `
-                    <option
-                        value="${escapeHtml(stop.id)}"
-                        ${selected}
-                    >
-                        ${escapeHtml(stop.name)}
-                        ${escapeHtml(km)}
-                        ${escapeHtml(stage)}
-                    </option>
-                `;
-            }
-        );
+            const stage =
+                stop.fare_stage_no
+                    ? ` - Stage ${stop.fare_stage_no}`
+                    : '';
+
+            html += `
+                <option
+                    value="${escapeHtml(stop.id)}"
+                    ${selected}
+                >
+                    ${escapeHtml(stop.name)}
+                    ${escapeHtml(km)}
+                    ${escapeHtml(stage)}
+                </option>
+            `;
+        });
 
         return html;
     }
@@ -1235,38 +865,33 @@
 
     /*
     |--------------------------------------------------------------------------
-    | Populate Existing Rows
+    | Populate Stop Dropdowns
     |--------------------------------------------------------------------------
     */
 
     function populateAllStopDropdowns() {
         document
-            .querySelectorAll(
-                '.route-stop-select'
-            )
-            .forEach(
-                select => {
-                    const selectedId =
-                        select.dataset.selected
-                        ||
-                        select.value
-                        ||
-                        '';
+            .querySelectorAll('.route-stop-select')
+            .forEach(select => {
 
-                    select.innerHTML =
-                        buildStopOptions(
-                            selectedId
-                        );
+                const selectedId =
+                    select.dataset.selected
+                    ||
+                    select.value
+                    ||
+                    '';
 
-                    select.dataset.selected = '';
-                }
-            );
+                select.innerHTML =
+                    buildStopOptions(selectedId);
+
+                select.dataset.selected = '';
+            });
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | Clear Stop Dropdowns
+    | Clear Dropdowns
     |--------------------------------------------------------------------------
     */
 
@@ -1274,49 +899,35 @@
         masterRouteStops = [];
 
         document
-            .querySelectorAll(
-                '.route-stop-select'
-            )
-            .forEach(
-                select => {
-                    select.innerHTML =
-                        '<option value="">-- Select Master Route First --</option>';
-                }
-            );
+            .querySelectorAll('.route-stop-select')
+            .forEach(select => {
+                select.innerHTML =
+                    '<option value="">-- Select Master Route First --</option>';
+            });
 
-        routeInfo.style.display =
-            'none';
-
-        routeInfo.innerHTML =
-            '';
+        routeInfo.style.display = 'none';
+        routeInfo.innerHTML = '';
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | Load Master Route Stops
+    | Load Route Stops
     |--------------------------------------------------------------------------
     */
 
-    async function loadRouteStops(
-        routeId
-    ) {
+    async function loadRouteStops(routeId) {
         if (!routeId) {
             clearStopDropdowns();
-
             return;
         }
 
         document
-            .querySelectorAll(
-                '.route-stop-select'
-            )
-            .forEach(
-                select => {
-                    select.innerHTML =
-                        '<option value="">Loading stops...</option>';
-                }
-            );
+            .querySelectorAll('.route-stop-select')
+            .forEach(select => {
+                select.innerHTML =
+                    '<option value="">Loading stops...</option>';
+            });
 
         try {
             const response =
@@ -1324,11 +935,8 @@
                     `/admin/fixed-schedules/routes/${routeId}/stops`,
                     {
                         headers: {
-                            'Accept':
-                                'application/json',
-
-                            'X-Requested-With':
-                                'XMLHttpRequest'
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
                         }
                     }
                 );
@@ -1356,20 +964,28 @@
                             data.route.route_number
                         )}
                     </strong>
+
                     &nbsp; — &nbsp;
+
                     ${escapeHtml(
                         data.route.origin
                     )}
+
                     →
+
                     ${escapeHtml(
                         data.route.destination
                     )}
+
                     &nbsp; | &nbsp;
+
                     Distance:
                     ${escapeHtml(
                         data.route.distance_km ?? '-'
                     )} km
+
                     &nbsp; | &nbsp;
+
                     Road-way Stops:
                     ${masterRouteStops.length}
                 `;
@@ -1384,15 +1000,11 @@
             masterRouteStops = [];
 
             document
-                .querySelectorAll(
-                    '.route-stop-select'
-                )
-                .forEach(
-                    select => {
-                        select.innerHTML =
-                            '<option value="">Unable to load stops</option>';
-                    }
-                );
+                .querySelectorAll('.route-stop-select')
+                .forEach(select => {
+                    select.innerHTML =
+                        '<option value="">Unable to load stops</option>';
+                });
 
             routeInfo.innerHTML =
                 'Unable to load stops for the selected Master Route.';
@@ -1405,7 +1017,7 @@
 
     /*
     |--------------------------------------------------------------------------
-    | Rebuild Dynamic Field Names
+    | Rebuild Dynamic Input Names
     |--------------------------------------------------------------------------
     */
 
@@ -1416,53 +1028,29 @@
             );
 
         container
-            .querySelectorAll(
-                '.schedule-row'
-            )
-            .forEach(
-                (row, index) => {
+            .querySelectorAll('.schedule-row')
+            .forEach((row, index) => {
 
-                    row.querySelector(
-                        '.order-field'
-                    ).value =
-                        index + 1;
+                row.querySelector(
+                    '.order-field'
+                ).value =
+                    index + 1;
 
-                    row.querySelector(
-                        '.route-stop-select'
-                    ).name =
-                        `${direction}_stops[${index}][route_stop_id]`;
+                row.querySelector(
+                    '.route-stop-select'
+                ).name =
+                    `${direction}_stops[${index}][route_stop_id]`;
 
-                    row.querySelector(
-                        '.arrival-time'
-                    ).name =
-                        `${direction}_stops[${index}][arrival_time]`;
+                row.querySelector(
+                    '.arrival-time'
+                ).name =
+                    `${direction}_stops[${index}][arrival_time]`;
 
-                    row.querySelector(
-                        '.departure-time'
-                    ).name =
-                        `${direction}_stops[${index}][departure_time]`;
-
-                    row.querySelector(
-                        '.boarding-hidden'
-                    ).name =
-                        `${direction}_stops[${index}][boarding_allowed]`;
-
-                    row.querySelector(
-                        '.boarding-check'
-                    ).name =
-                        `${direction}_stops[${index}][boarding_allowed]`;
-
-                    row.querySelector(
-                        '.dropoff-hidden'
-                    ).name =
-                        `${direction}_stops[${index}][dropoff_allowed]`;
-
-                    row.querySelector(
-                        '.dropoff-check'
-                    ).name =
-                        `${direction}_stops[${index}][dropoff_allowed]`;
-                }
-            );
+                row.querySelector(
+                    '.departure-time'
+                ).name =
+                    `${direction}_stops[${index}][departure_time]`;
+            });
     }
 
 
@@ -1474,19 +1062,16 @@
 
     window.addStop =
         function (direction) {
+
             const container =
                 document.getElementById(
-                    direction +
-                    '-container'
+                    direction + '-container'
                 );
 
             const fragment =
-                template.content
-                    .cloneNode(true);
+                template.content.cloneNode(true);
 
-            container.appendChild(
-                fragment
-            );
+            container.appendChild(fragment);
 
             const rows =
                 container.querySelectorAll(
@@ -1494,20 +1079,14 @@
                 );
 
             const newRow =
-                rows[
-                    rows.length - 1
-                ];
+                rows[rows.length - 1];
 
             const select =
                 newRow.querySelector(
                     '.route-stop-select'
                 );
 
-            if (
-                masterRouteStops.length
-                >
-                0
-            ) {
+            if (masterRouteStops.length > 0) {
                 select.innerHTML =
                     buildStopOptions();
             }
@@ -1525,11 +1104,10 @@
     document.addEventListener(
         'click',
         function (event) {
+
             if (
                 !event.target.classList
-                    .contains(
-                        'remove-row'
-                    )
+                    .contains('remove-row')
             ) {
                 return;
             }
@@ -1550,22 +1128,20 @@
                         '.schedule-row'
                     )
                     .length
-                <=
-                2
+                <= 2
             ) {
                 alert(
-                    'Each direction needs at least two booking points.'
+                    'Each direction needs at least two timetable stops.'
                 );
 
                 return;
             }
 
             const direction =
-                container.id
-                    .replace(
-                        '-container',
-                        ''
-                    );
+                container.id.replace(
+                    '-container',
+                    ''
+                );
 
             row.remove();
 
@@ -1576,106 +1152,24 @@
 
     /*
     |--------------------------------------------------------------------------
-    | Master Route Change
+    | Route Change
     |--------------------------------------------------------------------------
     */
 
     routeSelect.addEventListener(
         'change',
         function () {
+
             document
-                .querySelectorAll(
-                    '.route-stop-select'
-                )
-                .forEach(
-                    select => {
-                        select.dataset.selected =
-                            '';
-                    }
-                );
+                .querySelectorAll('.route-stop-select')
+                .forEach(select => {
+                    select.dataset.selected = '';
+                });
 
             loadRouteStops(
                 this.value
             );
         }
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Operator → Bus Filtering
-    |--------------------------------------------------------------------------
-    */
-
-    function filterBuses() {
-        const operatorId =
-            operatorSelect.value;
-
-        const currentBus =
-            busSelect.value;
-
-        let currentStillVisible =
-            false;
-
-        Array.from(
-            busSelect.options
-        ).forEach(
-            option => {
-                if (!option.value) {
-                    option.hidden = false;
-
-                    return;
-                }
-
-                const busOperatorId =
-                    option.dataset
-                        .operatorId;
-
-                const visible =
-                    !operatorId
-                    ||
-                    String(
-                        busOperatorId
-                    )
-                    ===
-                    String(
-                        operatorId
-                    );
-
-                option.hidden =
-                    !visible;
-
-                if (
-                    visible
-                    &&
-                    String(
-                        option.value
-                    )
-                    ===
-                    String(
-                        currentBus
-                    )
-                ) {
-                    currentStillVisible =
-                        true;
-                }
-            }
-        );
-
-        if (
-            currentBus
-            &&
-            !currentStillVisible
-        ) {
-            busSelect.value =
-                '';
-        }
-    }
-
-
-    operatorSelect.addEventListener(
-        'change',
-        filterBuses
     );
 
 
@@ -1688,11 +1182,7 @@
     rebuild('starting');
     rebuild('return');
 
-    filterBuses();
-
-    if (
-        routeSelect.value
-    ) {
+    if (routeSelect.value) {
         loadRouteStops(
             routeSelect.value
         );

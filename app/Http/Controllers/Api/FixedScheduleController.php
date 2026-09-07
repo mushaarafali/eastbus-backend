@@ -208,7 +208,7 @@ class FixedScheduleController extends Controller
                         ),
 
                     'label' =>
-                        'TIMETABLE ONLY',
+                        'Daily Service',
 
                     'message' =>
                         'Online seat booking is not available for this service.',
@@ -327,7 +327,7 @@ class FixedScheduleController extends Controller
                     $returnStops,
 
                 'label' =>
-                    'TIMETABLE ONLY',
+                    'Daily Service',
 
                 'message' =>
                     'Online seat booking is not available for this service.',

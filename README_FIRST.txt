@@ -19,7 +19,7 @@ GET /api/passenger/fixed-schedules/search?origin=Kalmunai&destination=Batticaloa
 GET /api/passenger/fixed-schedules/{id}
 
 Rules:
-- Timetable only
+- Daily Service
 - No booking/payment/QR/tracking
 - Up to 3 contact numbers
 - Starting + return schedule
