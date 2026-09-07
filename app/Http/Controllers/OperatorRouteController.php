@@ -14,10 +14,9 @@ class OperatorRouteController extends Controller
     | Index
     |--------------------------------------------------------------------------
     |
-    | Show only services belonging to the logged-in operator.
+    | Operator sees only their configured Bus Route Services.
     |
-    | Important:
-    | Operator does NOT own or edit the master route.
+    | Master Routes themselves are managed only by System Admin.
     |
     */
 
@@ -26,13 +25,13 @@ class OperatorRouteController extends Controller
         $operatorId = $this->operatorId($request);
 
         $services = DB::table('fixed_services as fs')
-            ->join(
+            ->leftJoin(
                 'routes as r',
                 'r.id',
                 '=',
                 'fs.route_id'
             )
-            ->join(
+            ->leftJoin(
                 'buses as b',
                 'b.id',
                 '=',
@@ -43,13 +42,28 @@ class OperatorRouteController extends Controller
                 $operatorId
             )
             ->select(
-                'fs.*',
+                'fs.id',
+                'fs.operator_id',
+                'fs.route_id',
+                'fs.bus_id',
+                'fs.service_name',
+                'fs.starting_time',
+                'fs.return_time',
+                'fs.is_active',
+                'fs.is_published',
+                'fs.created_at',
+                'fs.updated_at',
+
                 'r.route_number',
                 'r.name as route_name',
-                'r.origin',
-                'r.destination',
-                'r.distance_km',
-                'b.bus_number'
+                'r.origin as route_origin',
+                'r.destination as route_destination',
+                'r.distance_km as route_distance_km',
+                'r.duration_minutes as route_duration_minutes',
+
+                'b.bus_number as linked_bus_number',
+                'b.bus_name as linked_bus_name',
+                'b.bus_type as linked_bus_type'
             )
             ->orderByDesc('fs.id')
             ->get();
@@ -57,15 +71,20 @@ class OperatorRouteController extends Controller
         foreach ($services as $service) {
             $service->starting_booking_stops =
                 $this->serviceStops(
-                    $service->id,
+                    (int) $service->id,
                     'starting'
                 );
 
             $service->return_booking_stops =
                 $this->serviceStops(
-                    $service->id,
+                    (int) $service->id,
                     'return'
                 );
+
+            $service->is_complete =
+                !empty($service->route_id)
+                &&
+                !empty($service->bus_id);
         }
 
         return view(
@@ -78,43 +97,36 @@ class OperatorRouteController extends Controller
     |--------------------------------------------------------------------------
     | Create
     |--------------------------------------------------------------------------
-    |
-    | Operator selects:
-    |
-    | 1. Bus
-    | 2. Existing Master Route
-    | 3. Starting booking points
-    | 4. Starting times
-    | 5. Return booking points
-    | 6. Return times
-    |
     */
 
     public function create(Request $request)
     {
-        $operatorId = $this->operatorId(
-            $request
-        );
+        $operatorId =
+            $this->operatorId($request);
 
         /*
-         * All active master routes.
-         *
-         * Do NOT filter by operator_id because routes
-         * are now System Admin master data.
+         * System Admin managed Master Routes.
          */
         $routes = DB::table('routes')
-            ->where('is_active', true)
+            ->where(
+                'is_active',
+                true
+            )
             ->orderBy('route_number')
             ->orderBy('origin')
             ->get();
 
         /*
-         * Only this operator's buses.
+         * Logged-in operator's active buses only.
          */
         $buses = DB::table('buses')
             ->where(
                 'operator_id',
                 $operatorId
+            )
+            ->where(
+                'is_active',
+                true
             )
             ->orderBy('bus_number')
             ->get();
@@ -122,34 +134,31 @@ class OperatorRouteController extends Controller
         return view(
             'operator.routes.form',
             [
-                'service' => null,
-                'routes' => $routes,
-                'buses' => $buses,
-                'routeStops' => collect(),
-                'startingBookingStops' => collect(),
-                'returnBookingStops' => collect(),
+                'service' =>
+                    null,
+
+                'routes' =>
+                    $routes,
+
+                'buses' =>
+                    $buses,
+
+                'routeStops' =>
+                    collect(),
+
+                'startingBookingStops' =>
+                    collect(),
+
+                'returnBookingStops' =>
+                    collect(),
             ]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Get Master Roadway
+    | Load Selected Master Route Roadway
     |--------------------------------------------------------------------------
-    |
-    | Called when operator selects a master route.
-    |
-    | Example:
-    |
-    | Route 76
-    |     ↓
-    | Akkaraipattu
-    | Addalaichenai
-    | Kalmunai
-    | Batticaloa
-    | ...
-    | Trincomalee
-    |
     */
 
     public function routeStops(
@@ -159,54 +168,75 @@ class OperatorRouteController extends Controller
         $this->operatorId($request);
 
         $route = DB::table('routes')
-            ->where('id', $routeId)
-            ->where('is_active', true)
+            ->where(
+                'id',
+                $routeId
+            )
+            ->where(
+                'is_active',
+                true
+            )
             ->first();
 
-        abort_unless($route, 404);
+        abort_unless(
+            $route,
+            404
+        );
 
         $stops = DB::table('route_stops')
             ->where(
                 'route_id',
                 $routeId
             )
-            ->orderBy('stop_order')
-            ->get();
+            ->orderBy(
+                'stop_order'
+            )
+            ->get()
+            ->map(
+                function ($stop) {
+                    return [
+                        'id' =>
+                            (int) $stop->id,
 
-        $formattedStops = $stops->map(
-            function ($stop) {
-                return [
-                    'id' => $stop->id,
+                        'route_id' =>
+                            (int) $stop->route_id,
 
-                    'name' => $stop->name,
+                        'name' =>
+                            $stop->name,
 
-                    'stop_order' =>
-                        (int) $stop->stop_order,
+                        'stop_order' =>
+                            (int) $stop->stop_order,
 
-                    'fare_stage_no' =>
-                        $stop->fare_stage_no,
+                        'fare_stage_no' =>
+                            $stop->fare_stage_no !== null
+                                ? (int) $stop->fare_stage_no
+                                : null,
 
-                    /*
-                     * Support both old and new
-                     * distance column names.
-                     */
-                    'distance_from_origin_km' =>
-                        $stop->distance_from_origin_km
-                        ?? $stop->distance_from_origin
-                        ?? 0,
+                        'distance_from_origin_km' =>
+                            (float) (
+                                $stop->distance_from_origin_km
+                                ??
+                                $stop->distance_from_origin
+                                ??
+                                0
+                            ),
 
-                    'latitude' =>
-                        $stop->latitude ?? null,
+                        'latitude' =>
+                            $stop->latitude ?? null,
 
-                    'longitude' =>
-                        $stop->longitude ?? null,
-                ];
-            }
-        );
+                        'longitude' =>
+                            $stop->longitude ?? null,
+                    ];
+                }
+            )
+            ->values();
 
         return response()->json([
+            'success' => true,
+
             'route' => [
-                'id' => $route->id,
+                'id' =>
+                    $route->id,
 
                 'route_number' =>
                     $route->route_number,
@@ -222,118 +252,143 @@ class OperatorRouteController extends Controller
 
                 'distance_km' =>
                     $route->distance_km,
+
+                'duration_minutes' =>
+                    $route->duration_minutes,
             ],
 
-            'stops' => $formattedStops,
+            'stops' =>
+                $stops,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Store Operator Bus Service
+    | Store Bus Route Service
     |--------------------------------------------------------------------------
     */
 
     public function store(Request $request)
     {
-        $operatorId = $this->operatorId(
-            $request
+        $operatorId =
+            $this->operatorId($request);
+
+        $data =
+            $this->validateService(
+                $request
+            );
+
+        $this->validateMasterRoute(
+            (int) $data['route_id']
         );
 
-        $data = $this->validateService(
-            $request
-        );
-
-        /*
-         * Make sure selected bus belongs
-         * to logged-in operator.
-         */
         $this->validateOperatorBus(
             $operatorId,
-            $data['bus_id']
+            (int) $data['bus_id']
         );
 
-        /*
-         * Validate booking points against
-         * selected master route.
-         */
+        $this->validateDuplicateService(
+            $operatorId,
+            (int) $data['bus_id'],
+            (int) $data['route_id']
+        );
+
         $startingStops =
             $this->prepareBookingStops(
-                $data['route_id'],
-                $data['starting_booking_stops'],
+                (int) $data['route_id'],
+                $data[
+                    'starting_booking_stops'
+                ],
                 'starting'
             );
 
         $returnStops =
             $this->prepareBookingStops(
-                $data['route_id'],
-                $data['return_booking_stops'],
+                (int) $data['route_id'],
+                $data[
+                    'return_booking_stops'
+                ],
                 'return'
             );
 
-        $serviceId = DB::transaction(
-            function () use (
-                $operatorId,
-                $data,
-                $startingStops,
-                $returnStops,
-                $request
-            ) {
-                $serviceId = DB::table(
-                    'fixed_services'
-                )->insertGetId([
-                    'operator_id' =>
-                        $operatorId,
+        $serviceId =
+            DB::transaction(
+                function () use (
+                    $operatorId,
+                    $data,
+                    $startingStops,
+                    $returnStops,
+                    $request
+                ) {
+                    $serviceId =
+                        DB::table(
+                            'fixed_services'
+                        )
+                            ->insertGetId([
+                                'operator_id' =>
+                                    $operatorId,
 
-                    'route_id' =>
-                        $data['route_id'],
+                                'route_id' =>
+                                    $data['route_id'],
 
-                    'bus_id' =>
-                        $data['bus_id'],
+                                'bus_id' =>
+                                    $data['bus_id'],
 
-                    'service_name' =>
-                        $data['service_name']
-                        ?? null,
+                                'service_name' =>
+                                    !empty(
+                                        $data[
+                                            'service_name'
+                                        ]
+                                    )
+                                        ? trim(
+                                            $data[
+                                                'service_name'
+                                            ]
+                                        )
+                                        : null,
 
-                    'starting_time' =>
-                        $this->firstServiceTime(
-                            $startingStops
-                        ),
+                                'starting_time' =>
+                                    $this->firstServiceTime(
+                                        $startingStops
+                                    ),
 
-                    'return_time' =>
-                        $this->firstServiceTime(
-                            $returnStops
-                        ),
+                                'return_time' =>
+                                    $this->firstServiceTime(
+                                        $returnStops
+                                    ),
 
-                    'is_active' =>
-                        $request->boolean(
-                            'is_active'
-                        ),
+                                'is_active' =>
+                                    $request->boolean(
+                                        'is_active'
+                                    ),
 
-                    'is_published' =>
-                        $request->boolean(
-                            'is_published'
-                        ),
+                                'is_published' =>
+                                    $request->boolean(
+                                        'is_published'
+                                    ),
 
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+                                'created_at' =>
+                                    now(),
 
-                $this->saveServiceStops(
-                    $serviceId,
-                    'starting',
-                    $startingStops
-                );
+                                'updated_at' =>
+                                    now(),
+                            ]);
 
-                $this->saveServiceStops(
-                    $serviceId,
-                    'return',
-                    $returnStops
-                );
+                    $this->saveServiceStops(
+                        $serviceId,
+                        'starting',
+                        $startingStops
+                    );
 
-                return $serviceId;
-            }
-        );
+                    $this->saveServiceStops(
+                        $serviceId,
+                        'return',
+                        $returnStops
+                    );
+
+                    return $serviceId;
+                }
+            );
 
         return redirect()
             ->route(
@@ -348,7 +403,7 @@ class OperatorRouteController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Edit Operator Service
+    | Edit
     |--------------------------------------------------------------------------
     */
 
@@ -356,24 +411,36 @@ class OperatorRouteController extends Controller
         Request $request,
         int $id
     ) {
-        $operatorId = $this->operatorId(
-            $request
-        );
+        $operatorId =
+            $this->operatorId($request);
 
         $service = DB::table(
             'fixed_services'
         )
-            ->where('id', $id)
+            ->where(
+                'id',
+                $id
+            )
             ->where(
                 'operator_id',
                 $operatorId
             )
             ->first();
 
-        abort_unless($service, 404);
+        abort_unless(
+            $service,
+            404
+        );
 
+        /*
+         * Legacy records without a Master Route
+         * can still open safely.
+         */
         $routes = DB::table('routes')
-            ->where('is_active', true)
+            ->where(
+                'is_active',
+                true
+            )
             ->orderBy('route_number')
             ->orderBy('origin')
             ->get();
@@ -383,32 +450,35 @@ class OperatorRouteController extends Controller
                 'operator_id',
                 $operatorId
             )
+            ->where(
+                'is_active',
+                true
+            )
             ->orderBy('bus_number')
             ->get();
 
-        /*
-         * Fixed roadway from selected
-         * System Admin master route.
-         */
-        $routeStops = DB::table(
-            'route_stops'
-        )
-            ->where(
-                'route_id',
-                $service->route_id
-            )
-            ->orderBy('stop_order')
-            ->get();
+        $routeStops =
+            !empty($service->route_id)
+                ? DB::table('route_stops')
+                    ->where(
+                        'route_id',
+                        $service->route_id
+                    )
+                    ->orderBy(
+                        'stop_order'
+                    )
+                    ->get()
+                : collect();
 
         $startingBookingStops =
             $this->serviceStops(
-                $service->id,
+                $id,
                 'starting'
             );
 
         $returnBookingStops =
             $this->serviceStops(
-                $service->id,
+                $id,
                 'return'
             );
 
@@ -427,7 +497,7 @@ class OperatorRouteController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Update Operator Service
+    | Update
     |--------------------------------------------------------------------------
     */
 
@@ -435,42 +505,63 @@ class OperatorRouteController extends Controller
         Request $request,
         int $id
     ) {
-        $operatorId = $this->operatorId(
-            $request
-        );
+        $operatorId =
+            $this->operatorId($request);
 
         $service = DB::table(
             'fixed_services'
         )
-            ->where('id', $id)
+            ->where(
+                'id',
+                $id
+            )
             ->where(
                 'operator_id',
                 $operatorId
             )
             ->first();
 
-        abort_unless($service, 404);
+        abort_unless(
+            $service,
+            404
+        );
 
-        $data = $this->validateService(
-            $request
+        $data =
+            $this->validateService(
+                $request
+            );
+
+        $this->validateMasterRoute(
+            (int) $data['route_id']
         );
 
         $this->validateOperatorBus(
             $operatorId,
-            $data['bus_id']
+            (int) $data['bus_id']
+        );
+
+        $this->validateDuplicateService(
+            $operatorId,
+            (int) $data['bus_id'],
+            (int) $data['route_id'],
+            $id
         );
 
         $startingStops =
             $this->prepareBookingStops(
-                $data['route_id'],
-                $data['starting_booking_stops'],
+                (int) $data['route_id'],
+                $data[
+                    'starting_booking_stops'
+                ],
                 'starting'
             );
 
         $returnStops =
             $this->prepareBookingStops(
-                $data['route_id'],
-                $data['return_booking_stops'],
+                (int) $data['route_id'],
+                $data[
+                    'return_booking_stops'
+                ],
                 'return'
             );
 
@@ -482,8 +573,13 @@ class OperatorRouteController extends Controller
                 $returnStops,
                 $request
             ) {
-                DB::table('fixed_services')
-                    ->where('id', $id)
+                DB::table(
+                    'fixed_services'
+                )
+                    ->where(
+                        'id',
+                        $id
+                    )
                     ->update([
                         'route_id' =>
                             $data['route_id'],
@@ -492,8 +588,17 @@ class OperatorRouteController extends Controller
                             $data['bus_id'],
 
                         'service_name' =>
-                            $data['service_name']
-                            ?? null,
+                            !empty(
+                                $data[
+                                    'service_name'
+                                ]
+                            )
+                                ? trim(
+                                    $data[
+                                        'service_name'
+                                    ]
+                                )
+                                : null,
 
                         'starting_time' =>
                             $this->firstServiceTime(
@@ -515,15 +620,15 @@ class OperatorRouteController extends Controller
                                 'is_published'
                             ),
 
-                        'updated_at' => now(),
+                        'updated_at' =>
+                            now(),
                     ]);
 
                 /*
-                 * Only service booking points
-                 * are replaced.
+                 * Rebuild only service-level
+                 * booking points and times.
                  *
-                 * Master route / roadway is
-                 * NEVER changed here.
+                 * Master Route remains untouched.
                  */
                 DB::table(
                     'fixed_service_stops'
@@ -548,45 +653,65 @@ class OperatorRouteController extends Controller
             }
         );
 
-        return back()->with(
-            'success',
-            'Bus route service updated successfully.'
-        );
+        return redirect()
+            ->route(
+                'operator.routes.edit',
+                $id
+            )
+            ->with(
+                'success',
+                'Bus route service updated successfully.'
+            );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Delete Operator Service
+    | Delete
     |--------------------------------------------------------------------------
-    |
-    | Important:
-    | This deletes only the operator's service.
-    |
-    | It DOES NOT delete:
-    | - routes
-    | - route_stops
-    |
     */
 
     public function destroy(
         Request $request,
         int $id
     ) {
-        $operatorId = $this->operatorId(
-            $request
-        );
+        $operatorId =
+            $this->operatorId($request);
 
         $service = DB::table(
             'fixed_services'
         )
-            ->where('id', $id)
+            ->where(
+                'id',
+                $id
+            )
             ->where(
                 'operator_id',
                 $operatorId
             )
             ->first();
 
-        abort_unless($service, 404);
+        abort_unless(
+            $service,
+            404
+        );
+
+        /*
+         * Do not delete a service already used by Trips.
+         */
+        $hasTrips =
+            DB::table('trips')
+                ->where(
+                    'fixed_service_id',
+                    $id
+                )
+                ->exists();
+
+        if ($hasTrips) {
+            throw ValidationException::withMessages([
+                'service' =>
+                    'This bus route service cannot be deleted because trips already use it. Disable the service instead.',
+            ]);
+        }
 
         DB::transaction(
             function () use ($id) {
@@ -602,7 +727,10 @@ class OperatorRouteController extends Controller
                 DB::table(
                     'fixed_services'
                 )
-                    ->where('id', $id)
+                    ->where(
+                        'id',
+                        $id
+                    )
                     ->delete();
             }
         );
@@ -613,7 +741,7 @@ class OperatorRouteController extends Controller
             )
             ->with(
                 'success',
-                'Bus service removed successfully.'
+                'Bus route service removed successfully.'
             );
     }
 
@@ -627,18 +755,12 @@ class OperatorRouteController extends Controller
         Request $request
     ): array {
         return $request->validate([
-            /*
-             * Selected Master Route
-             */
             'route_id' => [
                 'required',
                 'integer',
                 'exists:routes,id',
             ],
 
-            /*
-             * Selected Operator Bus
-             */
             'bus_id' => [
                 'required',
                 'integer',
@@ -660,24 +782,21 @@ class OperatorRouteController extends Controller
                 'min:2',
             ],
 
-            'starting_booking_stops.*.route_stop_id'
-                => [
-                    'required',
-                    'integer',
-                    'exists:route_stops,id',
-                ],
+            'starting_booking_stops.*.route_stop_id' => [
+                'required',
+                'integer',
+                'exists:route_stops,id',
+            ],
 
-            'starting_booking_stops.*.arrival_time'
-                => [
-                    'nullable',
-                    'date_format:H:i',
-                ],
+            'starting_booking_stops.*.arrival_time' => [
+                'nullable',
+                'date_format:H:i',
+            ],
 
-            'starting_booking_stops.*.departure_time'
-                => [
-                    'nullable',
-                    'date_format:H:i',
-                ],
+            'starting_booking_stops.*.departure_time' => [
+                'nullable',
+                'date_format:H:i',
+            ],
 
             /*
              * Return Booking Points
@@ -688,25 +807,65 @@ class OperatorRouteController extends Controller
                 'min:2',
             ],
 
-            'return_booking_stops.*.route_stop_id'
-                => [
-                    'required',
-                    'integer',
-                    'exists:route_stops,id',
-                ],
+            'return_booking_stops.*.route_stop_id' => [
+                'required',
+                'integer',
+                'exists:route_stops,id',
+            ],
 
-            'return_booking_stops.*.arrival_time'
-                => [
-                    'nullable',
-                    'date_format:H:i',
-                ],
+            'return_booking_stops.*.arrival_time' => [
+                'nullable',
+                'date_format:H:i',
+            ],
 
-            'return_booking_stops.*.departure_time'
-                => [
-                    'nullable',
-                    'date_format:H:i',
-                ],
+            'return_booking_stops.*.departure_time' => [
+                'nullable',
+                'date_format:H:i',
+            ],
         ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Master Route
+    |--------------------------------------------------------------------------
+    */
+
+    private function validateMasterRoute(
+        int $routeId
+    ): void {
+        $route = DB::table('routes')
+            ->where(
+                'id',
+                $routeId
+            )
+            ->where(
+                'is_active',
+                true
+            )
+            ->first();
+
+        if (!$route) {
+            throw ValidationException::withMessages([
+                'route_id' =>
+                    'Selected Master Route is invalid or inactive.',
+            ]);
+        }
+
+        $stopCount =
+            DB::table('route_stops')
+                ->where(
+                    'route_id',
+                    $routeId
+                )
+                ->count();
+
+        if ($stopCount < 2) {
+            throw ValidationException::withMessages([
+                'route_id' =>
+                    'Selected Master Route must contain at least two roadway stops.',
+            ]);
+        }
     }
 
     /*
@@ -720,25 +879,24 @@ class OperatorRouteController extends Controller
         array $points,
         string $direction
     ): array {
-        /*
-         * Load ONLY roadway stops from
-         * selected master route.
-         */
-        $roadStops = DB::table(
-            'route_stops'
-        )
-            ->where(
-                'route_id',
-                $routeId
-            )
-            ->orderBy('stop_order')
-            ->get()
-            ->keyBy('id');
+        $roadStops =
+            DB::table('route_stops')
+                ->where(
+                    'route_id',
+                    $routeId
+                )
+                ->orderBy(
+                    'stop_order'
+                )
+                ->get()
+                ->keyBy('id');
 
-        if ($roadStops->isEmpty()) {
+        if (
+            $roadStops->isEmpty()
+        ) {
             throw ValidationException::withMessages([
                 'route_id' =>
-                    'Selected route does not contain any roadway stops.',
+                    'Selected Master Route does not contain roadway stops.',
             ]);
         }
 
@@ -748,25 +906,18 @@ class OperatorRouteController extends Controller
             $points as $index => $point
         ) {
             $routeStopId =
-                (int) $point[
-                    'route_stop_id'
-                ];
+                (int)
+                $point['route_stop_id'];
 
             $routeStop =
                 $roadStops->get(
                     $routeStopId
                 );
 
-            /*
-             * Security validation.
-             *
-             * Route 76 selected means operator
-             * cannot manually submit a Route 48 stop.
-             */
             if (!$routeStop) {
                 throw ValidationException::withMessages([
-                    "{$direction}_booking_stops.$index.route_stop_id"
-                        => 'Selected booking point does not belong to the selected route.',
+                    "{$direction}_booking_stops.$index.route_stop_id" =>
+                        'Selected booking point does not belong to the selected Master Route.',
                 ]);
             }
 
@@ -784,35 +935,28 @@ class OperatorRouteController extends Controller
                     ? $point['departure_time']
                     : null;
 
-            /*
-             * One time is enough.
-             */
             if (
-                !$arrivalTime &&
+                !$arrivalTime
+                &&
                 !$departureTime
             ) {
                 throw ValidationException::withMessages([
-                    "{$direction}_booking_stops.$index.arrival_time"
-                        => 'Enter an arrival time or departure time.',
+                    "{$direction}_booking_stops.$index.arrival_time" =>
+                        'Enter an arrival time or departure time for every booking point.',
                 ]);
             }
 
             $prepared[] = [
                 'route_stop_id' =>
-                    (int) $routeStop->id,
+                    (int)
+                    $routeStop->id,
 
-                /*
-                 * Never trust operator-entered name.
-                 *
-                 * Name automatically comes from
-                 * Admin Master Roadway.
-                 */
                 'stop_name' =>
                     $routeStop->name,
 
                 'master_stop_order' =>
-                    (int) $routeStop
-                        ->stop_order,
+                    (int)
+                    $routeStop->stop_order,
 
                 'arrival_time' =>
                     $arrivalTime,
@@ -823,39 +967,42 @@ class OperatorRouteController extends Controller
         }
 
         /*
-         * Duplicate booking points
-         * are not allowed.
+         * Duplicate booking points are not allowed.
          */
-        $stopIds = collect(
-            $prepared
-        )->pluck(
-            'route_stop_id'
-        );
+        $stopIds =
+            collect($prepared)
+                ->pluck(
+                    'route_stop_id'
+                );
 
         if (
-            $stopIds->unique()->count()
+            $stopIds
+                ->unique()
+                ->count()
             !==
             $stopIds->count()
         ) {
             throw ValidationException::withMessages([
-                "{$direction}_booking_stops"
-                    => 'The same booking point cannot be selected more than once.',
+                "{$direction}_booking_stops" =>
+                    'The same booking point cannot be selected more than once.',
             ]);
         }
 
-        /*
-         * Validate roadway order.
-         */
-        $orders = collect(
-            $prepared
-        )
-            ->pluck(
-                'master_stop_order'
-            )
-            ->values()
-            ->all();
+        $orders =
+            collect($prepared)
+                ->pluck(
+                    'master_stop_order'
+                )
+                ->values()
+                ->all();
 
-        if ($direction === 'starting') {
+        /*
+         * Starting direction:
+         * Master Route order must increase.
+         */
+        if (
+            $direction === 'starting'
+        ) {
             for (
                 $i = 1;
                 $i < count($orders);
@@ -867,14 +1014,20 @@ class OperatorRouteController extends Controller
                     $orders[$i - 1]
                 ) {
                     throw ValidationException::withMessages([
-                        'starting_booking_stops'
-                            => 'Starting booking points must follow the master roadway order.',
+                        'starting_booking_stops' =>
+                            'Starting booking points must follow the Master Route roadway order.',
                     ]);
                 }
             }
         }
 
-        if ($direction === 'return') {
+        /*
+         * Return direction:
+         * Master Route order must decrease.
+         */
+        if (
+            $direction === 'return'
+        ) {
             for (
                 $i = 1;
                 $i < count($orders);
@@ -886,78 +1039,89 @@ class OperatorRouteController extends Controller
                     $orders[$i - 1]
                 ) {
                     throw ValidationException::withMessages([
-                        'return_booking_stops'
-                            => 'Return booking points must follow the master roadway in reverse order.',
+                        'return_booking_stops' =>
+                            'Return booking points must follow the Master Route in reverse order.',
                     ]);
                 }
             }
         }
 
         /*
-         * Route endpoint validation.
+         * Exact route endpoints.
          */
+        $orderedRoadStops =
+            $roadStops
+                ->sortBy(
+                    'stop_order'
+                )
+                ->values();
+
         $firstMasterStop =
-            $roadStops->sortBy(
-                'stop_order'
-            )->first();
+            $orderedRoadStops->first();
 
         $lastMasterStop =
-            $roadStops->sortBy(
-                'stop_order'
-            )->last();
+            $orderedRoadStops->last();
 
-        if ($direction === 'starting') {
+        if (
+            $direction === 'starting'
+        ) {
             if (
-                (int) $prepared[0][
-                    'route_stop_id'
-                ]
+                (int)
+                $prepared[0]['route_stop_id']
                 !==
-                (int) $firstMasterStop->id
+                (int)
+                $firstMasterStop->id
             ) {
                 throw ValidationException::withMessages([
-                    'starting_booking_stops'
-                        => 'Starting service must begin from the route origin.',
+                    'starting_booking_stops' =>
+                        'Starting service must begin from the Master Route origin.',
                 ]);
             }
 
             if (
-                (int) $prepared[
+                (int)
+                $prepared[
                     count($prepared) - 1
                 ]['route_stop_id']
                 !==
-                (int) $lastMasterStop->id
+                (int)
+                $lastMasterStop->id
             ) {
                 throw ValidationException::withMessages([
-                    'starting_booking_stops'
-                        => 'Starting service must end at the route destination.',
+                    'starting_booking_stops' =>
+                        'Starting service must end at the Master Route destination.',
                 ]);
             }
         }
 
-        if ($direction === 'return') {
+        if (
+            $direction === 'return'
+        ) {
             if (
-                (int) $prepared[0][
-                    'route_stop_id'
-                ]
+                (int)
+                $prepared[0]['route_stop_id']
                 !==
-                (int) $lastMasterStop->id
+                (int)
+                $lastMasterStop->id
             ) {
                 throw ValidationException::withMessages([
-                    'return_booking_stops'
-                        => 'Return service must begin from the route destination.',
+                    'return_booking_stops' =>
+                        'Return service must begin from the Master Route destination.',
                 ]);
             }
 
             if (
-                (int) $prepared[
+                (int)
+                $prepared[
                     count($prepared) - 1
                 ]['route_stop_id']
                 !==
-                (int) $firstMasterStop->id
+                (int)
+                $firstMasterStop->id
             ) {
                 throw ValidationException::withMessages([
-                    'return_booking_stops'
-                        => 'Return service must end at the route origin.',
+                    'return_booking_stops' =>
+                        'Return service must end at the Master Route origin.',
                 ]);
             }
         }
@@ -967,7 +1131,7 @@ class OperatorRouteController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Save Fixed Service Booking Points
+    | Save Service Stops
     |--------------------------------------------------------------------------
     */
 
@@ -998,23 +1162,21 @@ class OperatorRouteController extends Controller
                 'departure_time' =>
                     $stop['departure_time'],
 
-                /*
-                 * Selected points are
-                 * passenger booking points.
-                 */
-                'boarding_allowed' => true,
+                'boarding_allowed' =>
+                    true,
 
-                'dropoff_allowed' => true,
+                'dropoff_allowed' =>
+                    true,
 
-                'created_at' => now(),
-                'updated_at' => now(),
+                'created_at' =>
+                    now(),
+
+                'updated_at' =>
+                    now(),
             ];
 
             /*
-             * Temporary compatibility with
-             * old fixed_service_stops table.
-             *
-             * Operator never types stop_name.
+             * Temporary legacy compatibility.
              */
             if (
                 Schema::hasColumn(
@@ -1034,7 +1196,7 @@ class OperatorRouteController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Get Existing Service Stops
+    | Get Service Stops
     |--------------------------------------------------------------------------
     */
 
@@ -1045,7 +1207,7 @@ class OperatorRouteController extends Controller
         return DB::table(
             'fixed_service_stops as fss'
         )
-            ->join(
+            ->leftJoin(
                 'route_stops as rs',
                 'rs.id',
                 '=',
@@ -1063,10 +1225,20 @@ class OperatorRouteController extends Controller
                 'fss.stop_order'
             )
             ->select(
-                'fss.*',
+                'fss.id',
+                'fss.fixed_service_id',
+                'fss.route_stop_id',
+                'fss.direction',
+                'fss.stop_order',
+                'fss.arrival_time',
+                'fss.departure_time',
+                'fss.boarding_allowed',
+                'fss.dropoff_allowed',
+
                 'rs.name as stop_name',
                 'rs.stop_order as master_stop_order',
-                'rs.fare_stage_no'
+                'rs.fare_stage_no',
+                'rs.distance_from_origin_km'
             )
             ->get();
     }
@@ -1081,42 +1253,98 @@ class OperatorRouteController extends Controller
         int $operatorId,
         int $busId
     ): void {
-        $exists = DB::table('buses')
-            ->where('id', $busId)
-            ->where(
-                'operator_id',
-                $operatorId
-            )
-            ->exists();
+        $exists =
+            DB::table('buses')
+                ->where(
+                    'id',
+                    $busId
+                )
+                ->where(
+                    'operator_id',
+                    $operatorId
+                )
+                ->where(
+                    'is_active',
+                    true
+                )
+                ->exists();
 
         if (!$exists) {
             throw ValidationException::withMessages([
                 'bus_id' =>
-                    'Selected bus does not belong to your operator account.',
+                    'Selected bus does not belong to your operator account or is inactive.',
             ]);
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Starting / Return Service Time
+    | Prevent Duplicate Bus + Route Service
+    |--------------------------------------------------------------------------
+    */
+
+    private function validateDuplicateService(
+        int $operatorId,
+        int $busId,
+        int $routeId,
+        ?int $ignoreServiceId = null
+    ): void {
+        $query =
+            DB::table(
+                'fixed_services'
+            )
+                ->where(
+                    'operator_id',
+                    $operatorId
+                )
+                ->where(
+                    'bus_id',
+                    $busId
+                )
+                ->where(
+                    'route_id',
+                    $routeId
+                );
+
+        if (
+            $ignoreServiceId !== null
+        ) {
+            $query->where(
+                'id',
+                '!=',
+                $ignoreServiceId
+            );
+        }
+
+        if ($query->exists()) {
+            throw ValidationException::withMessages([
+                'bus_id' =>
+                    'This bus is already linked to the selected Master Route.',
+            ]);
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | First Service Time
     |--------------------------------------------------------------------------
     */
 
     private function firstServiceTime(
         array $stops
     ): ?string {
-        if (empty($stops)) {
+        if (
+            empty($stops)
+        ) {
             return null;
         }
 
-        return $stops[0][
-            'departure_time'
-        ]
-            ?? $stops[0][
-                'arrival_time'
-            ]
-            ?? null;
+        return
+            $stops[0]['departure_time']
+            ??
+            $stops[0]['arrival_time']
+            ??
+            null;
     }
 
     /*
@@ -1128,20 +1356,23 @@ class OperatorRouteController extends Controller
     private function operatorId(
         Request $request
     ): int {
-        $user = $request->user();
+        $user =
+            $request->user();
 
         if ($user) {
-            $operatorId = DB::table(
-                'operators'
-            )
-                ->where(
-                    'user_id',
-                    $user->id
+            $operatorId =
+                DB::table(
+                    'operators'
                 )
-                ->value('id');
+                    ->where(
+                        'user_id',
+                        $user->id
+                    )
+                    ->value('id');
 
             if ($operatorId) {
-                return (int) $operatorId;
+                return
+                    (int) $operatorId;
             }
 
             abort(
@@ -1150,24 +1381,29 @@ class OperatorRouteController extends Controller
             );
         }
 
+        /*
+         * Session fallback.
+         */
         if (
             session()->has(
                 'operator_id'
             )
         ) {
             $operatorId =
-                (int) session(
+                (int)
+                session(
                     'operator_id'
                 );
 
-            $exists = DB::table(
-                'operators'
-            )
-                ->where(
-                    'id',
-                    $operatorId
+            $exists =
+                DB::table(
+                    'operators'
                 )
-                ->exists();
+                    ->where(
+                        'id',
+                        $operatorId
+                    )
+                    ->exists();
 
             if ($exists) {
                 return $operatorId;
