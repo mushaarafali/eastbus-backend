@@ -18,16 +18,17 @@ class PassengerBookingController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Passenger Locations
+    | Passenger Search Locations
     |--------------------------------------------------------------------------
     |
-    | Locations now come from:
+    | Only BOOKABLE Operator services are used here.
     |
-    | fixed_services
-    |      ↓
-    | fixed_service_stops
-    |      ↓
-    | route_stops
+    | Admin fixed daily schedules:
+    |
+    | operator_id = NULL
+    | bus_id      = NULL
+    |
+    | are excluded.
     |
     */
 
@@ -45,9 +46,7 @@ class PassengerBookingController extends Controller
             (string) ($data['search'] ?? '')
         );
 
-        $query = DB::table(
-            'fixed_service_stops as fss'
-        )
+        $query = DB::table('fixed_service_stops as fss')
             ->join(
                 'fixed_services as fs',
                 'fs.id',
@@ -66,8 +65,19 @@ class PassengerBookingController extends Controller
                 '=',
                 'fs.route_id'
             )
+
+            /*
+             * Operator bookable service only.
+             */
+            ->whereNotNull('fs.operator_id')
+            ->whereNotNull('fs.bus_id')
+
             ->where(
                 'fs.is_active',
+                true
+            )
+            ->where(
+                'fs.is_published',
                 true
             )
             ->where(
@@ -101,23 +111,35 @@ class PassengerBookingController extends Controller
         return response()->json([
             'success' => true,
 
-            'locations' =>
-                $query
-                    ->orderBy('rs.name')
-                    ->limit(30)
-                    ->get(),
+            'locations' => $query
+                ->orderBy('rs.name')
+                ->limit(50)
+                ->get(),
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Search Trips
+    | Search Bookable Trips
     |--------------------------------------------------------------------------
+    |
+    | ONE Master Route supports BOTH directions.
+    |
+    | Example:
+    |
+    | Route 76
+    | Akkaraipattu ↔ Trincomalee
+    |
+    | Starting Trip:
+    | Akkaraipattu -> Trincomalee
+    |
+    | Return Trip:
+    | Trincomalee -> Akkaraipattu
+    |
     */
 
-    public function searchTrips(
-        Request $request
-    ) {
+    public function searchTrips(Request $request)
+    {
         $data = $request->validate([
             'origin' => [
                 'required',
@@ -151,8 +173,49 @@ class PassengerBookingController extends Controller
             $data['date']
         )->toDateString();
 
-        $trips = $this
-            ->tripQuery()
+        /*
+        |--------------------------------------------------------------------------
+        | Find Master Routes containing BOTH requested stops
+        |--------------------------------------------------------------------------
+        */
+
+        $matchingRouteIds =
+            $this->findRoutesContainingStops(
+                $origin,
+                $destination
+            );
+
+        if ($matchingRouteIds->isEmpty()) {
+            return response()->json([
+                'success' => true,
+
+                'origin' =>
+                    $origin,
+
+                'destination' =>
+                    $destination,
+
+                'date' =>
+                    $date,
+
+                'minimum_journey_km' =>
+                    self::MIN_JOURNEY_KM,
+
+                'trips' => [],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Find published scheduled trips
+        |--------------------------------------------------------------------------
+        */
+
+        $trips = $this->tripQuery()
+            ->whereIn(
+                'trips.route_id',
+                $matchingRouteIds->all()
+            )
             ->where(
                 'trips.is_published',
                 true
@@ -161,21 +224,12 @@ class PassengerBookingController extends Controller
                 'trips.status',
                 'scheduled'
             )
+            ->whereNotNull(
+                'trips.fixed_service_id'
+            )
             ->whereDate(
                 'trips.service_date',
                 $date
-            )
-            ->when(
-                $date === today()->toDateString(),
-                function ($query) {
-                    $query->whereTime(
-                        'trips.departure_time',
-                        '>',
-                        now()->format(
-                            'H:i:s'
-                        )
-                    );
-                }
             )
             ->orderBy(
                 'trips.departure_time'
@@ -183,183 +237,277 @@ class PassengerBookingController extends Controller
             ->get();
 
         $matches = $trips
-            ->map(
-                function (
-                    $trip
-                ) use (
-                    $origin,
-                    $destination
+            ->map(function ($trip) use (
+                $origin,
+                $destination,
+                $date
+            ) {
+                /*
+                 * Protect against Admin timetable-only service.
+                 */
+                if (
+                    empty($trip->service_operator_id)
+                    ||
+                    empty($trip->service_bus_id)
                 ) {
-                    /*
-                     * Exact booking points for this
-                     * trip's fixed_service_id.
-                     */
-                    $bookingStops =
-                        $this->bookingStopsForTrip(
-                            $trip
-                        );
-
-                    if (
-                        $bookingStops->isEmpty()
-                    ) {
-                        return null;
-                    }
-
-                    $boarding =
-                        $bookingStops->first(
-                            fn ($stop) =>
-                                $this->sameStopName(
-                                    $stop->name,
-                                    $origin
-                                )
-                                &&
-                                (bool)
-                                $stop->boarding_allowed
-                        );
-
-                    $dropoff =
-                        $bookingStops->first(
-                            fn ($stop) =>
-                                $this->sameStopName(
-                                    $stop->name,
-                                    $destination
-                                )
-                                &&
-                                (bool)
-                                $stop->dropoff_allowed
-                        );
-
-                    if (
-                        !$boarding
-                        ||
-                        !$dropoff
-                    ) {
-                        return null;
-                    }
-
-                    /*
-                     * Passenger must travel forward
-                     * in current trip direction.
-                     */
-                    if (
-                        (int)
-                        $boarding->_journey_order
-                        >=
-                        (int)
-                        $dropoff->_journey_order
-                    ) {
-                        return null;
-                    }
-
-                    $journeyDistance =
-                        $this->journeyDistance(
-                            $boarding,
-                            $dropoff
-                        );
-
-                    if (
-                        $journeyDistance
-                        <
-                        self::MIN_JOURNEY_KM
-                    ) {
-                        return null;
-                    }
-
-                    $fareStageDifference =
-                        abs(
-                            (int)
-                            $dropoff->fare_stage_no
-                            -
-                            (int)
-                            $boarding->fare_stage_no
-                        );
-
-                    if (
-                        $fareStageDifference < 1
-                    ) {
-                        return null;
-                    }
-
-                    $segmentFare =
-                        $this->calculateStageFare(
-                            $trip,
-                            $boarding,
-                            $dropoff
-                        );
-
-                    if (
-                        $segmentFare === null
-                    ) {
-                        return null;
-                    }
-
-                    $trip->requested_origin =
-                        $boarding->name;
-
-                    $trip->requested_destination =
-                        $dropoff->name;
-
-                    $trip->boarding_stop =
-                        $boarding->name;
-
-                    $trip->dropoff_stop =
-                        $dropoff->name;
-
-                    $trip->boarding_time =
-                        $boarding->schedule_time;
-
-                    $trip->dropoff_time =
-                        $dropoff->schedule_time;
-
-                    $trip->journey_distance_km =
-                        round(
-                            $journeyDistance,
-                            2
-                        );
-
-                    $trip->minimum_journey_km =
-                        self::MIN_JOURNEY_KM;
-
-                    $trip->fare_stage_difference =
-                        $fareStageDifference;
-
-                    $trip->segment_fare =
-                        $segmentFare;
-
-                    $trip->fare =
-                        $segmentFare;
-
-                    $trip->booking_available =
-                        $this->isTripBookable(
-                            $trip
-                        );
-
-                    /*
-                     * Display direction correctly.
-                     */
-                    if (
-                        $this->isReturnTrip(
-                            $trip
-                        )
-                    ) {
-                        $originalOrigin =
-                            $trip->origin;
-
-                        $trip->origin =
-                            $trip->destination;
-
-                        $trip->destination =
-                            $originalOrigin;
-                    }
-
-                    return $trip;
+                    return null;
                 }
-            )
+
+                if (
+                    !(bool) $trip->service_active
+                    ||
+                    !(bool) $trip->service_published
+                ) {
+                    return null;
+                }
+
+                /*
+                 * Exact stops for this trip direction.
+                 */
+                $bookingStops =
+                    $this->bookingStopsForTrip(
+                        $trip
+                    );
+
+                if ($bookingStops->isEmpty()) {
+                    return null;
+                }
+
+                $boarding =
+                    $bookingStops->first(
+                        fn ($stop) =>
+                            $this->sameStopName(
+                                $stop->name,
+                                $origin
+                            )
+                            &&
+                            (bool)
+                            $stop->boarding_allowed
+                    );
+
+                $dropoff =
+                    $bookingStops->first(
+                        fn ($stop) =>
+                            $this->sameStopName(
+                                $stop->name,
+                                $destination
+                            )
+                            &&
+                            (bool)
+                            $stop->dropoff_allowed
+                    );
+
+                if (
+                    !$boarding
+                    ||
+                    !$dropoff
+                ) {
+                    return null;
+                }
+
+                /*
+                 * Passenger must travel forward
+                 * inside CURRENT trip direction.
+                 */
+                if (
+                    (int) $boarding->_journey_order
+                    >=
+                    (int) $dropoff->_journey_order
+                ) {
+                    return null;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Distance
+                |--------------------------------------------------------------------------
+                */
+
+                $journeyDistance =
+                    $this->journeyDistance(
+                        $boarding,
+                        $dropoff
+                    );
+
+                if (
+                    $journeyDistance
+                    <
+                    self::MIN_JOURNEY_KM
+                ) {
+                    return null;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | NTC Fare Stage Difference
+                |--------------------------------------------------------------------------
+                |
+                | ABS makes reverse direction correct.
+                |
+                */
+
+                $fareStageDifference =
+                    abs(
+                        (int)
+                        $dropoff->fare_stage_no
+                        -
+                        (int)
+                        $boarding->fare_stage_no
+                    );
+
+                if (
+                    $fareStageDifference < 1
+                ) {
+                    return null;
+                }
+
+                $segmentFare =
+                    $this->calculateStageFare(
+                        $trip,
+                        $boarding,
+                        $dropoff
+                    );
+
+                if (
+                    $segmentFare === null
+                ) {
+                    return null;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Passenger-requested segment
+                |--------------------------------------------------------------------------
+                */
+
+                $trip->requested_origin =
+                    $boarding->name;
+
+                $trip->requested_destination =
+                    $dropoff->name;
+
+                $trip->boarding_stop =
+                    $boarding->name;
+
+                $trip->dropoff_stop =
+                    $dropoff->name;
+
+                $trip->boarding_time =
+                    $boarding->schedule_time;
+
+                $trip->dropoff_time =
+                    $dropoff->schedule_time;
+
+                $trip->journey_distance_km =
+                    round(
+                        $journeyDistance,
+                        2
+                    );
+
+                $trip->minimum_journey_km =
+                    self::MIN_JOURNEY_KM;
+
+                $trip->fare_stage_difference =
+                    $fareStageDifference;
+
+                $trip->segment_fare =
+                    $segmentFare;
+
+                $trip->fare =
+                    $segmentFare;
+
+                $trip->direction =
+                    $this->isReturnTrip($trip)
+                        ? 'return'
+                        : 'starting';
+
+                /*
+                |--------------------------------------------------------------------------
+                | Correct route display
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $this->isReturnTrip(
+                        $trip
+                    )
+                ) {
+                    $trip->origin =
+                        $trip->route_destination;
+
+                    $trip->destination =
+                        $trip->route_origin;
+                } else {
+                    $trip->origin =
+                        $trip->route_origin;
+
+                    $trip->destination =
+                        $trip->route_destination;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Today search
+                |--------------------------------------------------------------------------
+                |
+                | Check passenger's actual boarding time.
+                |
+                */
+
+                if (
+                    $date
+                    ===
+                    today()->toDateString()
+                    &&
+                    !empty(
+                        $boarding->schedule_time
+                    )
+                ) {
+                    $boardingDateTime =
+                        Carbon::parse(
+                            $date
+                            .
+                            ' '
+                            .
+                            $boarding->schedule_time
+                        );
+
+                    if (
+                        !$boardingDateTime->isFuture()
+                    ) {
+                        return null;
+                    }
+                }
+
+                $trip->booking_available =
+                    $this->isTripBookable(
+                        $trip
+                    );
+
+                return $trip;
+            })
             ->filter()
+            ->sortBy(
+                fn ($trip) =>
+                    $trip->boarding_time
+                    ??
+                    $trip->departure_time
+                    ??
+                    '23:59:59'
+            )
             ->values();
 
         return response()->json([
             'success' => true,
+
+            'origin' =>
+                $origin,
+
+            'destination' =>
+                $destination,
+
+            'date' =>
+                $date,
 
             'minimum_journey_km' =>
                 self::MIN_JOURNEY_KM,
@@ -377,8 +525,7 @@ class PassengerBookingController extends Controller
 
     public function tripDetails($id)
     {
-        $trip = $this
-            ->tripQuery()
+        $trip = $this->tripQuery()
             ->where(
                 'trips.id',
                 $id
@@ -392,19 +539,14 @@ class PassengerBookingController extends Controller
             ], 404);
         }
 
-        /*
-         * Master Roadway.
-         */
         $roadWay =
             $this->roadWayForRoute(
-                (int) $trip->route_id
+                (int)
+                $trip->route_id
             );
 
-        /*
-         * Bus-specific schedules.
-         */
         $startingSchedule =
-            $trip->fixed_service_id
+            !empty($trip->fixed_service_id)
                 ? $this->bookingScheduleForService(
                     (int)
                     $trip->fixed_service_id,
@@ -413,7 +555,7 @@ class PassengerBookingController extends Controller
                 : collect();
 
         $returnSchedule =
-            $trip->fixed_service_id
+            !empty($trip->fixed_service_id)
                 ? $this->bookingScheduleForService(
                     (int)
                     $trip->fixed_service_id,
@@ -421,25 +563,17 @@ class PassengerBookingController extends Controller
                 )
                 : collect();
 
-        /*
-         * Stops available for this exact
-         * trip direction.
-         */
         $bookableStops =
             $this->bookingStopsForTrip(
                 $trip
             )
                 ->map(
                     fn ($stop) => [
-                        /*
-                         * New field.
-                         */
                         'fixed_service_stop_id' =>
                             $stop->id,
 
                         /*
-                         * Kept temporarily for
-                         * frontend compatibility.
+                         * Temporary frontend compatibility.
                          */
                         'route_booking_stop_id' =>
                             $stop->id,
@@ -463,12 +597,18 @@ class PassengerBookingController extends Controller
                             $stop->departure_time,
 
                         'fare_stage_no' =>
-                            (int)
-                            $stop->fare_stage_no,
+                            $stop->fare_stage_no !== null
+                                ? (int)
+                                $stop->fare_stage_no
+                                : null,
 
                         'distance_from_origin' =>
                             (float)
                             $stop->distance_from_origin,
+
+                        'distance_from_origin_km' =>
+                            (float)
+                            $stop->distance_from_origin_km,
 
                         'boarding_allowed' =>
                             (bool)
@@ -486,14 +626,17 @@ class PassengerBookingController extends Controller
                 $trip
             )
         ) {
-            $originalOrigin =
-                $trip->origin;
-
             $trip->origin =
-                $trip->destination;
+                $trip->route_destination;
 
             $trip->destination =
-                $originalOrigin;
+                $trip->route_origin;
+        } else {
+            $trip->origin =
+                $trip->route_origin;
+
+            $trip->destination =
+                $trip->route_destination;
         }
 
         return response()->json([
@@ -530,9 +673,8 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    public function bookings(
-        Request $request
-    ) {
+    public function bookings(Request $request)
+    {
         $passenger =
             $this->passenger(
                 $request
@@ -588,8 +730,9 @@ class PassengerBookingController extends Controller
                     'trips.trip_type',
 
                     'routes.route_number',
-                    'routes.origin',
-                    'routes.destination',
+
+                    'routes.origin as route_origin',
+                    'routes.destination as route_destination',
 
                     'buses.bus_number',
                     'buses.bus_name',
@@ -613,14 +756,17 @@ class PassengerBookingController extends Controller
                     $booking
                 )
             ) {
-                $originalOrigin =
-                    $booking->origin;
-
                 $booking->origin =
-                    $booking->destination;
+                    $booking->route_destination;
 
                 $booking->destination =
-                    $originalOrigin;
+                    $booking->route_origin;
+            } else {
+                $booking->origin =
+                    $booking->route_origin;
+
+                $booking->destination =
+                    $booking->route_destination;
             }
 
             $booking->passengers =
@@ -639,7 +785,8 @@ class PassengerBookingController extends Controller
             $booking->seats =
                 $this->decodeSeatNumbers(
                     $booking->seat_numbers
-                    ?? ''
+                    ??
+                    ''
                 );
 
             $journeyMeta =
@@ -650,28 +797,22 @@ class PassengerBookingController extends Controller
             $booking->boarding_time =
                 $booking->boarding_time
                 ??
-                $journeyMeta[
-                    'boarding_time'
-                ];
+                $journeyMeta['boarding_time'];
 
             $booking->dropoff_time =
                 $booking->dropoff_time
                 ??
-                $journeyMeta[
-                    'dropoff_time'
-                ];
+                $journeyMeta['dropoff_time'];
 
             $booking->fare_stage_difference =
-                $booking
-                    ->fare_stage_difference
+                $booking->fare_stage_difference
                 ??
                 $journeyMeta[
                     'fare_stage_difference'
                 ];
 
             $booking->journey_distance_km =
-                $booking
-                    ->journey_distance_km
+                $booking->journey_distance_km
                 ??
                 $journeyMeta[
                     'journey_distance_km'
@@ -741,9 +882,8 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    public function createBooking(
-        Request $request
-    ) {
+    public function createBooking(Request $request)
+    {
         $passenger =
             $this->passenger(
                 $request
@@ -854,9 +994,7 @@ class PassengerBookingController extends Controller
         if (
             $seatNumbers->count()
             !==
-            count(
-                $data['seat_numbers']
-            )
+            count($data['seat_numbers'])
         ) {
             throw ValidationException::withMessages([
                 'seat_numbers' =>
@@ -899,9 +1037,7 @@ class PassengerBookingController extends Controller
 
         $travellerSeats =
             $travellers
-                ->pluck(
-                    'seat_number'
-                )
+                ->pluck('seat_number')
                 ->unique()
                 ->sort()
                 ->values();
@@ -950,9 +1086,14 @@ class PassengerBookingController extends Controller
                             )
                             ->select(
                                 'trips.*',
+
                                 'buses.seat_count',
                                 'buses.bus_type',
-                                'fixed_services.is_active as service_active'
+
+                                'fixed_services.operator_id as service_operator_id',
+                                'fixed_services.bus_id as service_bus_id',
+                                'fixed_services.is_active as service_active',
+                                'fixed_services.is_published as service_published'
                             )
                             ->lockForUpdate()
                             ->first();
@@ -965,27 +1106,32 @@ class PassengerBookingController extends Controller
                     }
 
                     /*
-                     * Every new booking must belong
-                     * to an exact Fixed Service.
+                     * Admin timetable-only service
+                     * cannot be booked.
                      */
                     if (
-                        empty(
-                            $trip->fixed_service_id
-                        )
+                        empty($trip->fixed_service_id)
+                        ||
+                        empty($trip->service_operator_id)
+                        ||
+                        empty($trip->service_bus_id)
                     ) {
                         throw ValidationException::withMessages([
                             'trip_id' =>
-                                'This trip is not linked to a valid Bus Route Service.',
+                                'This trip is not linked to a valid bookable Bus Route Service.',
                         ]);
                     }
 
                     if (
                         !(bool)
                         $trip->service_active
+                        ||
+                        !(bool)
+                        $trip->service_published
                     ) {
                         throw ValidationException::withMessages([
                             'trip_id' =>
-                                'The Bus Route Service for this trip is currently inactive.',
+                                'The Bus Route Service for this trip is currently unavailable.',
                         ]);
                     }
 
@@ -1080,8 +1226,10 @@ class PassengerBookingController extends Controller
                         throw ValidationException::withMessages([
                             'destination' =>
                                 'The minimum online-booking distance is '
-                                . self::MIN_JOURNEY_KM
-                                . ' km.',
+                                .
+                                self::MIN_JOURNEY_KM
+                                .
+                                ' km.',
                         ]);
                     }
 
@@ -1095,9 +1243,7 @@ class PassengerBookingController extends Controller
                         );
 
                     if (
-                        $fareStageDifference
-                        <
-                        1
+                        $fareStageDifference < 1
                     ) {
                         throw ValidationException::withMessages([
                             'route' =>
@@ -1113,9 +1259,7 @@ class PassengerBookingController extends Controller
                         );
 
                     if (
-                        $farePerSeat
-                        ===
-                        null
+                        $farePerSeat === null
                     ) {
                         throw ValidationException::withMessages([
                             'route' =>
@@ -1124,8 +1268,11 @@ class PassengerBookingController extends Controller
                     }
 
                     /*
-                     * Seat validation.
-                     */
+                    |--------------------------------------------------------------------------
+                    | Validate seats
+                    |--------------------------------------------------------------------------
+                    */
+
                     $validSeats =
                         DB::table('seats')
                             ->where(
@@ -1165,7 +1312,8 @@ class PassengerBookingController extends Controller
 
                     $alreadyBooked =
                         $this->activeReservedSeatsQuery(
-                            (int) $trip->id
+                            (int)
+                            $trip->id
                         )
                             ->whereIn(
                                 'booking_passengers.seat_number',
@@ -1189,7 +1337,8 @@ class PassengerBookingController extends Controller
                         throw ValidationException::withMessages([
                             'seat_numbers' =>
                                 'Seat(s) already booked: '
-                                . $alreadyBooked->implode(
+                                .
+                                $alreadyBooked->implode(
                                     ', '
                                 ),
                         ]);
@@ -1329,9 +1478,7 @@ class PassengerBookingController extends Controller
                             'hold_expires_at'
                         )
                     ) {
-                        $row[
-                            'hold_expires_at'
-                        ] =
+                        $row['hold_expires_at'] =
                             now()->addMinutes(
                                 self::HOLD_MINUTES
                             );
@@ -1371,12 +1518,8 @@ class PassengerBookingController extends Controller
                                 'gender'
                             )
                         ) {
-                            $passengerRow[
-                                'gender'
-                            ] =
-                                $traveller[
-                                    'gender'
-                                ];
+                            $passengerRow['gender'] =
+                                $traveller['gender'];
                         }
 
                         if (
@@ -1385,9 +1528,7 @@ class PassengerBookingController extends Controller
                                 'checked_in_at'
                             )
                         ) {
-                            $passengerRow[
-                                'checked_in_at'
-                            ] =
+                            $passengerRow['checked_in_at'] =
                                 null;
                         }
 
@@ -1527,8 +1668,7 @@ class PassengerBookingController extends Controller
 
     public function availableSeats($id)
     {
-        $trip = $this
-            ->tripQuery()
+        $trip = $this->tripQuery()
             ->where(
                 'trips.id',
                 $id
@@ -1544,7 +1684,7 @@ class PassengerBookingController extends Controller
 
         $bookedSeats =
             $this->activeReservedSeatsQuery(
-                $id
+                (int) $id
             )
                 ->pluck(
                     'booking_passengers.seat_number'
@@ -1559,9 +1699,7 @@ class PassengerBookingController extends Controller
                 ->all();
 
         $genderBySeat =
-            DB::table(
-                'booking_passengers'
-            )
+            DB::table('booking_passengers')
                 ->join(
                     'bookings',
                     'bookings.id',
@@ -1618,9 +1756,7 @@ class PassengerBookingController extends Controller
                 )
                 ->get()
                 ->map(
-                    function (
-                        $seat
-                    ) use (
+                    function ($seat) use (
                         $bookedSeats,
                         $genderBySeat
                     ) {
@@ -1864,9 +2000,7 @@ class PassengerBookingController extends Controller
                 1
             )->endOfMonth();
 
-        if (
-            $expiry->isPast()
-        ) {
+        if ($expiry->isPast()) {
             throw ValidationException::withMessages([
                 'expiry_month' =>
                     'The card has expired.',
@@ -1881,9 +2015,7 @@ class PassengerBookingController extends Controller
                     $data
                 ) {
                     $booking =
-                        DB::table(
-                            'bookings'
-                        )
+                        DB::table('bookings')
                             ->where(
                                 'id',
                                 $id
@@ -1947,9 +2079,7 @@ class PassengerBookingController extends Controller
                             $booking->hold_expires_at
                         )->isPast()
                     ) {
-                        DB::table(
-                            'bookings'
-                        )
+                        DB::table('bookings')
                             ->where(
                                 'id',
                                 $booking->id
@@ -1987,9 +2117,7 @@ class PassengerBookingController extends Controller
 
                     $last4 =
                         substr(
-                            $data[
-                                'card_number'
-                            ],
+                            $data['card_number'],
                             -4
                         );
 
@@ -2036,9 +2164,7 @@ class PassengerBookingController extends Controller
                         'expiry_month' =>
                             str_pad(
                                 (string)
-                                $data[
-                                    'expiry_month'
-                                ],
+                                $data['expiry_month'],
                                 2,
                                 '0',
                                 STR_PAD_LEFT
@@ -2046,9 +2172,7 @@ class PassengerBookingController extends Controller
 
                         'expiry_year' =>
                             (string)
-                            $data[
-                                'expiry_year'
-                            ],
+                            $data['expiry_year'],
 
                         'paid_at' =>
                             now(),
@@ -2068,9 +2192,7 @@ class PassengerBookingController extends Controller
                                 $column
                             )
                         ) {
-                            $payment[
-                                $column
-                            ] =
+                            $payment[$column] =
                                 $value;
                         }
                     }
@@ -2098,9 +2220,7 @@ class PassengerBookingController extends Controller
                             'ticket_token'
                         )
                     ) {
-                        $update[
-                            'ticket_token'
-                        ] =
+                        $update['ticket_token'] =
                             $ticketToken;
                     }
 
@@ -2110,9 +2230,7 @@ class PassengerBookingController extends Controller
                             'ticket_status'
                         )
                     ) {
-                        $update[
-                            'ticket_status'
-                        ] =
+                        $update['ticket_status'] =
                             'valid';
                     }
 
@@ -2122,15 +2240,11 @@ class PassengerBookingController extends Controller
                             'hold_expires_at'
                         )
                     ) {
-                        $update[
-                            'hold_expires_at'
-                        ] =
+                        $update['hold_expires_at'] =
                             null;
                     }
 
-                    DB::table(
-                        'bookings'
-                    )
+                    DB::table('bookings')
                         ->where(
                             'id',
                             $booking->id
@@ -2141,9 +2255,7 @@ class PassengerBookingController extends Controller
 
                     return (object) [
                         'booking' =>
-                            DB::table(
-                                'bookings'
-                            )
+                            DB::table('bookings')
                                 ->where(
                                     'id',
                                     $booking->id
@@ -2273,8 +2385,9 @@ class PassengerBookingController extends Controller
                     'trips.trip_type',
 
                     'routes.route_number',
-                    'routes.origin',
-                    'routes.destination',
+
+                    'routes.origin as route_origin',
+                    'routes.destination as route_destination',
 
                     'buses.bus_number',
                     'buses.bus_name',
@@ -2294,13 +2407,9 @@ class PassengerBookingController extends Controller
         }
 
         if (
-            $booking->payment_status
-            !==
-            'paid'
+            $booking->payment_status !== 'paid'
             ||
-            $booking->status
-            !==
-            'confirmed'
+            $booking->status !== 'confirmed'
         ) {
             return response()->json([
                 'success' => false,
@@ -2315,14 +2424,17 @@ class PassengerBookingController extends Controller
                 $booking
             )
         ) {
-            $originalOrigin =
-                $booking->origin;
-
             $booking->origin =
-                $booking->destination;
+                $booking->route_destination;
 
             $booking->destination =
-                $originalOrigin;
+                $booking->route_origin;
+        } else {
+            $booking->origin =
+                $booking->route_origin;
+
+            $booking->destination =
+                $booking->route_destination;
         }
 
         $passengers =
@@ -2388,16 +2500,13 @@ class PassengerBookingController extends Controller
                     'valid',
 
                 'company_name' =>
-                    $booking
-                        ->operator_name,
+                    $booking->operator_name,
 
                 'bus_name' =>
-                    $booking
-                        ->bus_name,
+                    $booking->bus_name,
 
                 'bus_number' =>
-                    $booking
-                        ->bus_number,
+                    $booking->bus_number,
 
                 'seat_numbers' =>
                     $this->decodeSeatNumbers(
@@ -2420,28 +2529,24 @@ class PassengerBookingController extends Controller
                     null,
 
                 'boarding_stop' =>
-                    $booking
-                        ->boarding_stop
+                    $booking->boarding_stop
                     ??
                     $booking->origin,
 
                 'dropoff_stop' =>
-                    $booking
-                        ->dropoff_stop
+                    $booking->dropoff_stop
                     ??
                     $booking->destination,
 
                 'boarding_time' =>
-                    $booking
-                        ->boarding_time
+                    $booking->boarding_time
                     ??
                     $journeyMeta[
                         'boarding_time'
                     ],
 
                 'dropoff_time' =>
-                    $booking
-                        ->dropoff_time
+                    $booking->dropoff_time
                     ??
                     $journeyMeta[
                         'dropoff_time'
@@ -2464,8 +2569,7 @@ class PassengerBookingController extends Controller
                     ],
 
                 'fare_per_seat' =>
-                    $booking
-                        ->fare_per_seat
+                    $booking->fare_per_seat
                     ??
                     $journeyMeta[
                         'fare_per_seat'
@@ -2575,13 +2679,9 @@ class PassengerBookingController extends Controller
         }
 
         if (
-            $booking->booking_status
-            !==
-            'confirmed'
+            $booking->booking_status !== 'confirmed'
             ||
-            $booking->payment_status
-            !==
-            'paid'
+            $booking->payment_status !== 'paid'
         ) {
             return response()->json([
                 'success' => false,
@@ -2592,9 +2692,7 @@ class PassengerBookingController extends Controller
         }
 
         if (
-            $booking->trip_status
-            !==
-            'active'
+            $booking->trip_status !== 'active'
         ) {
             return response()->json([
                 'success' =>
@@ -2651,9 +2749,8 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    public function notifications(
-        Request $request
-    ) {
+    public function notifications(Request $request)
+    {
         $passenger =
             $this->passenger(
                 $request
@@ -2772,9 +2869,7 @@ class PassengerBookingController extends Controller
         }
 
         if (
-            $booking->status
-            ===
-            'cancelled'
+            $booking->status === 'cancelled'
         ) {
             return response()->json([
                 'success' => false,
@@ -2843,9 +2938,7 @@ class PassengerBookingController extends Controller
                 'ticket_status'
             )
         ) {
-            $update[
-                'ticket_status'
-            ] =
+            $update['ticket_status'] =
                 'cancelled';
         }
 
@@ -2855,9 +2948,7 @@ class PassengerBookingController extends Controller
                 'hold_expires_at'
             )
         ) {
-            $update[
-                'hold_expires_at'
-            ] =
+            $update['hold_expires_at'] =
                 null;
         }
 
@@ -2882,13 +2973,12 @@ class PassengerBookingController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Passenger
+    | Current Passenger
     |--------------------------------------------------------------------------
     */
 
-    private function passenger(
-        Request $request
-    ) {
+    private function passenger(Request $request)
+    {
         $passenger =
             $request
                 ->attributes
@@ -2903,6 +2993,52 @@ class PassengerBookingController extends Controller
         );
 
         return $passenger;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Find Master Routes containing BOTH stops
+    |--------------------------------------------------------------------------
+    */
+
+    private function findRoutesContainingStops(
+        string $origin,
+        string $destination
+    ) {
+        $originRouteIds =
+            DB::table('route_stops')
+                ->whereRaw(
+                    'LOWER(TRIM(name)) = ?',
+                    [
+                        mb_strtolower(
+                            trim($origin)
+                        ),
+                    ]
+                )
+                ->pluck(
+                    'route_id'
+                );
+
+        $destinationRouteIds =
+            DB::table('route_stops')
+                ->whereRaw(
+                    'LOWER(TRIM(name)) = ?',
+                    [
+                        mb_strtolower(
+                            trim($destination)
+                        ),
+                    ]
+                )
+                ->pluck(
+                    'route_id'
+                );
+
+        return $originRouteIds
+            ->intersect(
+                $destinationRouteIds
+            )
+            ->unique()
+            ->values();
     }
 
     /*
@@ -2943,8 +3079,10 @@ class PassengerBookingController extends Controller
 
                 'routes.route_number',
                 'routes.name as route_name',
-                'routes.origin',
-                'routes.destination',
+
+                'routes.origin as route_origin',
+                'routes.destination as route_destination',
+
                 'routes.distance_km',
                 'routes.duration_minutes',
                 'routes.base_fare',
@@ -2957,6 +3095,12 @@ class PassengerBookingController extends Controller
 
                 'fixed_services.service_name',
 
+                'fixed_services.operator_id as service_operator_id',
+                'fixed_services.bus_id as service_bus_id',
+
+                'fixed_services.is_active as service_active',
+                'fixed_services.is_published as service_published',
+
                 'operators.company_name as operator_name'
             );
     }
@@ -2967,12 +3111,9 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function roadWayForRoute(
-        int $routeId
-    ) {
-        return DB::table(
-            'route_stops'
-        )
+    private function roadWayForRoute(int $routeId)
+    {
+        return DB::table('route_stops')
             ->where(
                 'route_id',
                 $routeId
@@ -2994,9 +3135,7 @@ class PassengerBookingController extends Controller
                         $stop->stop_order,
 
                     'fare_stage_no' =>
-                        $stop->fare_stage_no
-                        !==
-                        null
+                        $stop->fare_stage_no !== null
                             ? (int)
                             $stop->fare_stage_no
                             : null,
@@ -3004,26 +3143,19 @@ class PassengerBookingController extends Controller
                     'distance_from_origin_km' =>
                         (float)
                         (
-                            $stop
-                                ->distance_from_origin_km
+                            $stop->distance_from_origin_km
                             ??
-                            $stop
-                                ->distance_from_origin
+                            $stop->distance_from_origin
                             ??
                             0
                         ),
 
-                    /*
-                     * Compatibility.
-                     */
                     'distance_from_origin' =>
                         (float)
                         (
-                            $stop
-                                ->distance_from_origin_km
+                            $stop->distance_from_origin_km
                             ??
-                            $stop
-                                ->distance_from_origin
+                            $stop->distance_from_origin
                             ??
                             0
                         ),
@@ -3067,13 +3199,17 @@ class PassengerBookingController extends Controller
                 'fss.route_stop_id',
                 'fss.direction',
                 'fss.stop_order',
+
                 'fss.arrival_time',
                 'fss.departure_time',
+
                 'fss.boarding_allowed',
                 'fss.dropoff_allowed',
 
                 'rs.name',
+
                 'rs.fare_stage_no',
+
                 'rs.distance_from_origin_km'
             )
             ->get()
@@ -3108,9 +3244,7 @@ class PassengerBookingController extends Controller
                             $stop->arrival_time,
 
                         'fare_stage_no' =>
-                            $stop->fare_stage_no
-                            !==
-                            null
+                            $stop->fare_stage_no !== null
                                 ? (int)
                                 $stop->fare_stage_no
                                 : null,
@@ -3118,8 +3252,7 @@ class PassengerBookingController extends Controller
                         'distance_from_origin' =>
                             (float)
                             (
-                                $stop
-                                    ->distance_from_origin_km
+                                $stop->distance_from_origin_km
                                 ??
                                 0
                             ),
@@ -3127,8 +3260,7 @@ class PassengerBookingController extends Controller
                         'distance_from_origin_km' =>
                             (float)
                             (
-                                $stop
-                                    ->distance_from_origin_km
+                                $stop->distance_from_origin_km
                                 ??
                                 0
                             ),
@@ -3148,13 +3280,12 @@ class PassengerBookingController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Booking Stops For Exact Trip
+    | Booking Stops For Current Trip Direction
     |--------------------------------------------------------------------------
     */
 
-    private function bookingStopsForTrip(
-        $trip
-    ) {
+    private function bookingStopsForTrip($trip)
+    {
         if (
             empty(
                 $trip->fixed_service_id
@@ -3197,8 +3328,10 @@ class PassengerBookingController extends Controller
                     'fss.route_stop_id',
                     'fss.direction',
                     'fss.stop_order',
+
                     'fss.arrival_time',
                     'fss.departure_time',
+
                     'fss.boarding_allowed',
                     'fss.dropoff_allowed',
 
@@ -3209,9 +3342,17 @@ class PassengerBookingController extends Controller
                 ->get();
 
         foreach (
-            $stops as
+            $stops
+            as
             $index => $stop
         ) {
+            /*
+             * Journey order always:
+             *
+             * 1 → 2 → 3
+             *
+             * regardless of Master Route direction.
+             */
             $stop->_journey_order =
                 $index + 1;
 
@@ -3220,14 +3361,18 @@ class PassengerBookingController extends Controller
                 ??
                 $stop->arrival_time;
 
-            /*
-             * Compatibility with old fare code.
-             */
             $stop->distance_from_origin =
                 (float)
                 (
-                    $stop
-                        ->distance_from_origin_km
+                    $stop->distance_from_origin_km
+                    ??
+                    0
+                );
+
+            $stop->distance_from_origin_km =
+                (float)
+                (
+                    $stop->distance_from_origin_km
                     ??
                     0
                 );
@@ -3259,6 +3404,11 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     | NTC Stage Fare
     |--------------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    |
+    | Reverse journey must use ABS.
+    |
     */
 
     private function calculateStageFare(
@@ -3314,9 +3464,7 @@ class PassengerBookingController extends Controller
             );
 
         if (
-            $serviceClass
-            ===
-            null
+            $serviceClass === null
         ) {
             return null;
         }
@@ -3337,15 +3485,13 @@ class PassengerBookingController extends Controller
                     'fare'
                 );
 
-        return $fare
-            !==
-            null
-                ? round(
-                    (float)
-                    $fare,
-                    2
-                )
-                : null;
+        return $fare !== null
+            ? round(
+                (float)
+                $fare,
+                2
+            )
+            : null;
     }
 
     /*
@@ -3370,12 +3516,16 @@ class PassengerBookingController extends Controller
 
             'semi-luxury',
             'semi luxury',
-            'semiluxury' =>
+            'semiluxury',
+            'semi_luxury' =>
                 'semi_luxury',
 
             'a/c',
             'ac',
             'luxury',
+            'ac luxury',
+            'ac-luxury',
+            'ac_luxury',
             'air conditioned',
             'air-conditioned' =>
                 'luxury',
@@ -3391,9 +3541,8 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function bookingJourneyMeta(
-        $booking
-    ): array {
+    private function bookingJourneyMeta($booking): array
+    {
         $defaults = [
             'boarding_time' =>
                 null,
@@ -3586,9 +3735,7 @@ class PassengerBookingController extends Controller
                             'pending'
                         )
                         ->orWhere(
-                            function (
-                                $pending
-                            ) {
+                            function ($pending) {
                                 $pending
                                     ->where(
                                         'bookings.status',
@@ -3614,9 +3761,8 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function isTripBookable(
-        $trip
-    ): bool {
+    private function isTripBookable($trip): bool
+    {
         if (
             !(bool)
             $trip->is_published
@@ -3651,6 +3797,55 @@ class PassengerBookingController extends Controller
             return false;
         }
 
+        /*
+         * Admin Daily Service cannot be booked.
+         */
+        if (
+            isset(
+                $trip->service_operator_id
+            )
+            &&
+            empty(
+                $trip->service_operator_id
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            isset(
+                $trip->service_bus_id
+            )
+            &&
+            empty(
+                $trip->service_bus_id
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            isset(
+                $trip->service_active
+            )
+            &&
+            !(bool)
+            $trip->service_active
+        ) {
+            return false;
+        }
+
+        if (
+            isset(
+                $trip->service_published
+            )
+            &&
+            !(bool)
+            $trip->service_published
+        ) {
+            return false;
+        }
+
         $departure =
             Carbon::parse(
                 Carbon::parse(
@@ -3662,7 +3857,8 @@ class PassengerBookingController extends Controller
                 $trip->departure_time
             );
 
-        return $departure->isFuture();
+        return
+            $departure->isFuture();
     }
 
     /*
@@ -3693,7 +3889,8 @@ class PassengerBookingController extends Controller
             return '';
         }
 
-        return 'S'
+        return
+            'S'
             .
             (int)
             $number;
@@ -3706,16 +3903,21 @@ class PassengerBookingController extends Controller
     */
 
     private function sameStopName(
-        string $a,
-        string $b
+        string $first,
+        string $second
     ): bool {
-        return mb_strtolower(
-            trim($a)
-        )
-        ===
-        mb_strtolower(
-            trim($b)
-        );
+        return
+            mb_strtolower(
+                trim(
+                    $first
+                )
+            )
+            ===
+            mb_strtolower(
+                trim(
+                    $second
+                )
+            );
     }
 
     /*
@@ -3724,21 +3926,21 @@ class PassengerBookingController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function isReturnTrip(
-        $trip
-    ): bool {
-        return strtolower(
-            trim(
-                (string)
-                (
-                    $trip->trip_type
-                    ??
-                    'starting'
+    private function isReturnTrip($trip): bool
+    {
+        return
+            strtolower(
+                trim(
+                    (string)
+                    (
+                        $trip->trip_type
+                        ??
+                        'starting'
+                    )
                 )
             )
-        )
-        ===
-        'return';
+            ===
+            'return';
     }
 
     /*

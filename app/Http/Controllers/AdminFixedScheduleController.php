@@ -16,7 +16,10 @@ class AdminFixedScheduleController extends Controller
     |
     | Admin-created information-only daily bus schedules.
     |
-    | These are NOT operator booking services.
+    | No Operator
+    | No Bus relation
+    | No Booking
+    | No Payment
     |
     */
 
@@ -29,14 +32,8 @@ class AdminFixedScheduleController extends Controller
                 '=',
                 'fs.route_id'
             )
-
-            /*
-             * Admin information-only schedules have
-             * no Operator and no linked Bus record.
-             */
             ->whereNull('fs.operator_id')
             ->whereNull('fs.bus_id')
-
             ->select(
                 'fs.id',
                 'fs.route_id',
@@ -45,6 +42,8 @@ class AdminFixedScheduleController extends Controller
                 'fs.bus_number',
 
                 'fs.contact_number_1',
+                'fs.contact_number_2',
+                'fs.contact_number_3',
 
                 'fs.service_name',
 
@@ -59,8 +58,10 @@ class AdminFixedScheduleController extends Controller
 
                 'r.route_number',
                 'r.name as route_name',
+
                 'r.origin as route_origin',
                 'r.destination as route_destination',
+
                 'r.distance_km as route_distance_km',
                 'r.duration_minutes as route_duration_minutes'
             )
@@ -79,6 +80,30 @@ class AdminFixedScheduleController extends Controller
                     (int) $service->id,
                     'return'
                 );
+
+            /*
+             * Useful display values.
+             */
+            $service->starting_route =
+                ($service->route_origin ?? '-')
+                .
+                ' → '
+                .
+                ($service->route_destination ?? '-');
+
+            $service->return_route =
+                ($service->route_destination ?? '-')
+                .
+                ' → '
+                .
+                ($service->route_origin ?? '-');
+
+            $service->route_display =
+                ($service->route_origin ?? '-')
+                .
+                ' ↔ '
+                .
+                ($service->route_destination ?? '-');
         }
 
         return view(
@@ -104,15 +129,20 @@ class AdminFixedScheduleController extends Controller
         return view(
             'admin.fixed_schedules.form',
             [
-                'service' => null,
+                'service' =>
+                    null,
 
-                'routes' => $routes,
+                'routes' =>
+                    $routes,
 
-                'routeStops' => collect(),
+                'routeStops' =>
+                    collect(),
 
-                'startingStops' => collect(),
+                'startingStops' =>
+                    collect(),
 
-                'returnStops' => collect(),
+                'returnStops' =>
+                    collect(),
             ]
         );
     }
@@ -122,20 +152,20 @@ class AdminFixedScheduleController extends Controller
     | Master Route Stops
     |--------------------------------------------------------------------------
     |
-    | Master Route is created by System Admin.
+    | One Master Route supports BOTH directions.
     |
     | Example:
     |
     | Route 76
-    | Akkaraipattu
-    | Addalaichenai
-    | Nintavur
-    | Kalmunai
-    | Batticaloa
-    | ...
-    | Trincomalee
     |
-    | The Admin Fixed Schedule selects stops from this roadway.
+    | Master:
+    | Akkaraipattu -> Trincomalee
+    |
+    | Starting:
+    | Akkaraipattu -> Trincomalee
+    |
+    | Return:
+    | Trincomalee -> Akkaraipattu
     |
     */
 
@@ -196,7 +226,8 @@ class AdminFixedScheduleController extends Controller
             ->values();
 
         return response()->json([
-            'success' => true,
+            'success' =>
+                true,
 
             'route' => [
                 'id' =>
@@ -213,6 +244,27 @@ class AdminFixedScheduleController extends Controller
 
                 'destination' =>
                     $route->destination,
+
+                'route_display' =>
+                    $route->origin
+                    .
+                    ' ↔ '
+                    .
+                    $route->destination,
+
+                'starting_direction' =>
+                    $route->origin
+                    .
+                    ' → '
+                    .
+                    $route->destination,
+
+                'return_direction' =>
+                    $route->destination
+                    .
+                    ' → '
+                    .
+                    $route->origin,
 
                 'distance_km' =>
                     $route->distance_km,
@@ -267,8 +319,7 @@ class AdminFixedScheduleController extends Controller
                 ) {
                     $row = [
                         /*
-                         * Important:
-                         * This is NOT an Operator service.
+                         * Admin timetable only.
                          */
                         'operator_id' =>
                             null,
@@ -277,13 +328,13 @@ class AdminFixedScheduleController extends Controller
                             null,
 
                         /*
-                         * System Admin Master Route.
+                         * Master Route.
                          */
                         'route_id' =>
                             $data['route_id'],
 
                         /*
-                         * Information-only bus details.
+                         * Bus information.
                          */
                         'bus_name' =>
                             trim(
@@ -304,10 +355,6 @@ class AdminFixedScheduleController extends Controller
                                 $data['contact_number']
                             ),
 
-                        /*
-                         * Old additional contact fields
-                         * are no longer used.
-                         */
                         'contact_number_2' =>
                             null,
 
@@ -315,21 +362,23 @@ class AdminFixedScheduleController extends Controller
                             null,
 
                         /*
-                         * Keep service_name compatible
-                         * with existing schema/UI.
+                         * Compatibility field.
                          */
                         'service_name' =>
                             trim(
                                 $data['bus_name']
                             ),
 
+                        /*
+                         * First time in each direction.
+                         */
                         'starting_time' =>
-                            $this->getFirstTime(
+                            $this->firstTime(
                                 $startingStops
                             ),
 
                         'return_time' =>
-                            $this->getFirstTime(
+                            $this->firstTime(
                                 $returnStops
                             ),
 
@@ -350,9 +399,6 @@ class AdminFixedScheduleController extends Controller
                             now(),
                     ];
 
-                    /*
-                     * Store admin creator when column exists.
-                     */
                     if (
                         Schema::hasColumn(
                             'fixed_services',
@@ -405,19 +451,10 @@ class AdminFixedScheduleController extends Controller
 
     public function edit(int $id)
     {
-        $service = DB::table(
-            'fixed_services'
-        )
-            ->where(
-                'id',
-                $id
-            )
-            ->whereNull(
-                'operator_id'
-            )
-            ->whereNull(
-                'bus_id'
-            )
+        $service = DB::table('fixed_services')
+            ->where('id', $id)
+            ->whereNull('operator_id')
+            ->whereNull('bus_id')
             ->first();
 
         abort_unless(
@@ -432,19 +469,13 @@ class AdminFixedScheduleController extends Controller
             ->get();
 
         $routeStops =
-            !empty(
-                $service->route_id
-            )
-                ? DB::table(
-                    'route_stops'
-                )
+            !empty($service->route_id)
+                ? DB::table('route_stops')
                     ->where(
                         'route_id',
                         $service->route_id
                     )
-                    ->orderBy(
-                        'stop_order'
-                    )
+                    ->orderBy('stop_order')
                     ->get()
                 : collect();
 
@@ -482,19 +513,10 @@ class AdminFixedScheduleController extends Controller
         Request $request,
         int $id
     ) {
-        $service = DB::table(
-            'fixed_services'
-        )
-            ->where(
-                'id',
-                $id
-            )
-            ->whereNull(
-                'operator_id'
-            )
-            ->whereNull(
-                'bus_id'
-            )
+        $service = DB::table('fixed_services')
+            ->where('id', $id)
+            ->whereNull('operator_id')
+            ->whereNull('bus_id')
             ->first();
 
         abort_unless(
@@ -533,17 +555,12 @@ class AdminFixedScheduleController extends Controller
                 $startingStops,
                 $returnStops
             ) {
-                DB::table(
-                    'fixed_services'
-                )
+                DB::table('fixed_services')
                     ->where(
                         'id',
                         $id
                     )
                     ->update([
-                        /*
-                         * Remain Admin information-only.
-                         */
                         'operator_id' =>
                             null,
 
@@ -584,12 +601,12 @@ class AdminFixedScheduleController extends Controller
                             ),
 
                         'starting_time' =>
-                            $this->getFirstTime(
+                            $this->firstTime(
                                 $startingStops
                             ),
 
                         'return_time' =>
-                            $this->getFirstTime(
+                            $this->firstTime(
                                 $returnStops
                             ),
 
@@ -608,7 +625,7 @@ class AdminFixedScheduleController extends Controller
                     ]);
 
                 /*
-                 * Rebuild timetable stops.
+                 * Rebuild timetable only.
                  */
                 DB::table(
                     'fixed_service_stops'
@@ -652,30 +669,17 @@ class AdminFixedScheduleController extends Controller
 
     public function togglePublish(int $id)
     {
-        $service =
-            DB::table(
-                'fixed_services'
-            )
-                ->where(
-                    'id',
-                    $id
-                )
-                ->whereNull(
-                    'operator_id'
-                )
-                ->whereNull(
-                    'bus_id'
-                )
-                ->first();
+        $service = DB::table('fixed_services')
+            ->where('id', $id)
+            ->whereNull('operator_id')
+            ->whereNull('bus_id')
+            ->first();
 
         abort_unless(
             $service,
             404
         );
 
-        /*
-         * Only Master Route is required.
-         */
         if (
             empty(
                 $service->route_id
@@ -687,9 +691,49 @@ class AdminFixedScheduleController extends Controller
             ]);
         }
 
-        DB::table(
-            'fixed_services'
-        )
+        /*
+         * Must have both directions.
+         */
+        $startingExists =
+            DB::table(
+                'fixed_service_stops'
+            )
+                ->where(
+                    'fixed_service_id',
+                    $id
+                )
+                ->where(
+                    'direction',
+                    'starting'
+                )
+                ->exists();
+
+        $returnExists =
+            DB::table(
+                'fixed_service_stops'
+            )
+                ->where(
+                    'fixed_service_id',
+                    $id
+                )
+                ->where(
+                    'direction',
+                    'return'
+                )
+                ->exists();
+
+        if (
+            !$startingExists
+            ||
+            !$returnExists
+        ) {
+            throw ValidationException::withMessages([
+                'service' =>
+                    'Both Starting and Return timetables are required before publishing.',
+            ]);
+        }
+
+        DB::table('fixed_services')
             ->where(
                 'id',
                 $id
@@ -717,30 +761,18 @@ class AdminFixedScheduleController extends Controller
 
     public function toggleActive(int $id)
     {
-        $service =
-            DB::table(
-                'fixed_services'
-            )
-                ->where(
-                    'id',
-                    $id
-                )
-                ->whereNull(
-                    'operator_id'
-                )
-                ->whereNull(
-                    'bus_id'
-                )
-                ->first();
+        $service = DB::table('fixed_services')
+            ->where('id', $id)
+            ->whereNull('operator_id')
+            ->whereNull('bus_id')
+            ->first();
 
         abort_unless(
             $service,
             404
         );
 
-        DB::table(
-            'fixed_services'
-        )
+        DB::table('fixed_services')
             ->where(
                 'id',
                 $id
@@ -768,21 +800,11 @@ class AdminFixedScheduleController extends Controller
 
     public function destroy(int $id)
     {
-        $service =
-            DB::table(
-                'fixed_services'
-            )
-                ->where(
-                    'id',
-                    $id
-                )
-                ->whereNull(
-                    'operator_id'
-                )
-                ->whereNull(
-                    'bus_id'
-                )
-                ->first();
+        $service = DB::table('fixed_services')
+            ->where('id', $id)
+            ->whereNull('operator_id')
+            ->whereNull('bus_id')
+            ->first();
 
         abort_unless(
             $service,
@@ -823,7 +845,7 @@ class AdminFixedScheduleController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Form Validation
+    | Validation
     |--------------------------------------------------------------------------
     */
 
@@ -916,19 +938,16 @@ class AdminFixedScheduleController extends Controller
     private function validateMasterRoute(
         int $routeId
     ): void {
-        $route =
-            DB::table(
-                'routes'
+        $route = DB::table('routes')
+            ->where(
+                'id',
+                $routeId
             )
-                ->where(
-                    'id',
-                    $routeId
-                )
-                ->where(
-                    'is_active',
-                    true
-                )
-                ->first();
+            ->where(
+                'is_active',
+                true
+            )
+            ->first();
 
         if (!$route) {
             throw ValidationException::withMessages([
@@ -938,9 +957,7 @@ class AdminFixedScheduleController extends Controller
         }
 
         $stopCount =
-            DB::table(
-                'route_stops'
-            )
+            DB::table('route_stops')
                 ->where(
                     'route_id',
                     $routeId
@@ -948,7 +965,9 @@ class AdminFixedScheduleController extends Controller
                 ->count();
 
         if (
-            $stopCount < 2
+            $stopCount
+            <
+            2
         ) {
             throw ValidationException::withMessages([
                 'route_id' =>
@@ -969,9 +988,7 @@ class AdminFixedScheduleController extends Controller
         string $direction
     ): array {
         $routeStops =
-            DB::table(
-                'route_stops'
-            )
+            DB::table('route_stops')
                 ->where(
                     'route_id',
                     $routeId
@@ -994,7 +1011,9 @@ class AdminFixedScheduleController extends Controller
         $prepared = [];
 
         foreach (
-            $submittedStops as $index => $stop
+            $submittedStops
+            as
+            $index => $stop
         ) {
             $routeStopId =
                 (int)
@@ -1016,24 +1035,16 @@ class AdminFixedScheduleController extends Controller
 
             $arrivalTime =
                 !empty(
-                    $stop[
-                        'arrival_time'
-                    ]
+                    $stop['arrival_time']
                 )
-                    ? $stop[
-                        'arrival_time'
-                    ]
+                    ? $stop['arrival_time']
                     : null;
 
             $departureTime =
                 !empty(
-                    $stop[
-                        'departure_time'
-                    ]
+                    $stop['departure_time']
                 )
-                    ? $stop[
-                        'departure_time'
-                    ]
+                    ? $stop['departure_time']
                     : null;
 
             if (
@@ -1059,6 +1070,20 @@ class AdminFixedScheduleController extends Controller
                     (int)
                     $routeStop->stop_order,
 
+                'fare_stage_no' =>
+                    $routeStop->fare_stage_no !== null
+                        ? (int)
+                        $routeStop->fare_stage_no
+                        : null,
+
+                'distance_from_origin_km' =>
+                    (float)
+                    (
+                        $routeStop->distance_from_origin_km
+                        ??
+                        0
+                    ),
+
                 'arrival_time' =>
                     $arrivalTime,
 
@@ -1068,9 +1093,11 @@ class AdminFixedScheduleController extends Controller
         }
 
         /*
-         * Same stop cannot appear twice
-         * in the same direction.
-         */
+        |--------------------------------------------------------------------------
+        | Duplicate Validation
+        |--------------------------------------------------------------------------
+        */
+
         $ids =
             collect(
                 $prepared
@@ -1089,6 +1116,12 @@ class AdminFixedScheduleController extends Controller
             ]);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Master Route Order Validation
+        |--------------------------------------------------------------------------
+        */
+
         $orders =
             collect(
                 $prepared
@@ -1099,12 +1132,10 @@ class AdminFixedScheduleController extends Controller
                 ->values()
                 ->all();
 
-        /*
-         * Starting:
-         * Master Route forward order.
-         */
         if (
-            $direction === 'starting'
+            $direction
+            ===
+            'starting'
         ) {
             for (
                 $i = 1;
@@ -1118,18 +1149,16 @@ class AdminFixedScheduleController extends Controller
                 ) {
                     throw ValidationException::withMessages([
                         'starting_stops' =>
-                            'Starting timetable stops must follow the Master Route road-way order.',
+                            'Starting timetable must follow the Master Route forward order.',
                     ]);
                 }
             }
         }
 
-        /*
-         * Return:
-         * Master Route reverse order.
-         */
         if (
-            $direction === 'return'
+            $direction
+            ===
+            'return'
         ) {
             for (
                 $i = 1;
@@ -1143,9 +1172,122 @@ class AdminFixedScheduleController extends Controller
                 ) {
                     throw ValidationException::withMessages([
                         'return_stops' =>
-                            'Return timetable stops must follow the Master Route in reverse order.',
+                            'Return timetable must follow the Master Route reverse order.',
                     ]);
                 }
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Endpoint Validation
+        |--------------------------------------------------------------------------
+        |
+        | Starting must begin at Master Route origin
+        | and finish at Master Route destination.
+        |
+        | Return must do exactly the opposite.
+        |
+        */
+
+        $orderedMasterStops =
+            $routeStops
+                ->sortBy(
+                    'stop_order'
+                )
+                ->values();
+
+        $masterFirst =
+            $orderedMasterStops->first();
+
+        $masterLast =
+            $orderedMasterStops->last();
+
+        $submittedFirst =
+            $prepared[0];
+
+        $submittedLast =
+            $prepared[
+                count($prepared) - 1
+            ];
+
+        if (
+            $direction
+            ===
+            'starting'
+        ) {
+            if (
+                (int)
+                $submittedFirst['route_stop_id']
+                !==
+                (int)
+                $masterFirst->id
+            ) {
+                throw ValidationException::withMessages([
+                    'starting_stops' =>
+                        'Starting timetable must begin from the Master Route origin: '
+                        .
+                        $masterFirst->name
+                        .
+                        '.',
+                ]);
+            }
+
+            if (
+                (int)
+                $submittedLast['route_stop_id']
+                !==
+                (int)
+                $masterLast->id
+            ) {
+                throw ValidationException::withMessages([
+                    'starting_stops' =>
+                        'Starting timetable must end at the Master Route destination: '
+                        .
+                        $masterLast->name
+                        .
+                        '.',
+                ]);
+            }
+        }
+
+        if (
+            $direction
+            ===
+            'return'
+        ) {
+            if (
+                (int)
+                $submittedFirst['route_stop_id']
+                !==
+                (int)
+                $masterLast->id
+            ) {
+                throw ValidationException::withMessages([
+                    'return_stops' =>
+                        'Return timetable must begin from the Master Route destination: '
+                        .
+                        $masterLast->name
+                        .
+                        '.',
+                ]);
+            }
+
+            if (
+                (int)
+                $submittedLast['route_stop_id']
+                !==
+                (int)
+                $masterFirst->id
+            ) {
+                throw ValidationException::withMessages([
+                    'return_stops' =>
+                        'Return timetable must end at the Master Route origin: '
+                        .
+                        $masterFirst->name
+                        .
+                        '.',
+                ]);
             }
         }
 
@@ -1164,7 +1306,9 @@ class AdminFixedScheduleController extends Controller
         array $stops
     ): void {
         foreach (
-            $stops as $index => $stop
+            $stops
+            as
+            $index => $stop
         ) {
             $row = [
                 'fixed_service_id' =>
@@ -1178,6 +1322,14 @@ class AdminFixedScheduleController extends Controller
                 'direction' =>
                     $direction,
 
+                /*
+                 * Journey order.
+                 *
+                 * Return also stores:
+                 * 1,2,3...
+                 *
+                 * but actual Master Route order is reversed.
+                 */
                 'stop_order' =>
                     $index + 1,
 
@@ -1192,8 +1344,7 @@ class AdminFixedScheduleController extends Controller
                     ],
 
                 /*
-                 * Information-only service.
-                 * No booking permissions.
+                 * Admin schedule is information only.
                  */
                 'boarding_allowed' =>
                     false,
@@ -1267,6 +1418,7 @@ class AdminFixedScheduleController extends Controller
                 'fss.route_stop_id',
                 'fss.direction',
                 'fss.stop_order',
+
                 'fss.arrival_time',
                 'fss.departure_time',
 
@@ -1288,7 +1440,7 @@ class AdminFixedScheduleController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function getFirstTime(
+    private function firstTime(
         array $stops
     ): ?string {
         if (
