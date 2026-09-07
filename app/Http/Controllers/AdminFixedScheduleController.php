@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class AdminFixedScheduleController extends Controller
@@ -36,16 +37,27 @@ class AdminFixedScheduleController extends Controller
                 'fs.operator_id'
             )
             ->select(
-                'fs.*',
+                'fs.id',
+                'fs.operator_id',
+                'fs.route_id',
+                'fs.bus_id',
+                'fs.service_name',
+                'fs.starting_time',
+                'fs.return_time',
+                'fs.is_active',
+                'fs.is_published',
+                'fs.created_at',
+                'fs.updated_at',
 
                 'r.route_number',
                 'r.name as route_name',
                 'r.origin as route_origin',
                 'r.destination as route_destination',
+                'r.distance_km as route_distance_km',
 
                 'b.bus_number as linked_bus_number',
                 'b.bus_name as linked_bus_name',
-                'b.bus_type',
+                'b.bus_type as linked_bus_type',
 
                 'o.company_name as operator_name'
             )
@@ -86,36 +98,25 @@ class AdminFixedScheduleController extends Controller
             ->orderBy('origin')
             ->get();
 
-        $buses = DB::table('buses')
-            ->where('is_active', true)
-            ->orderBy('bus_number')
-            ->get();
-
-        /*
-         * IMPORTANT:
-         * operators table has company_name,
-         * not name.
-         */
         $operators = DB::table('operators')
             ->where('status', 'active')
             ->orderBy('company_name')
+            ->get();
+
+        $buses = DB::table('buses')
+            ->where('is_active', true)
+            ->orderBy('bus_number')
             ->get();
 
         return view(
             'admin.fixed_schedules.form',
             [
                 'service' => null,
-
                 'routes' => $routes,
-
-                'buses' => $buses,
-
                 'operators' => $operators,
-
+                'buses' => $buses,
                 'routeStops' => collect(),
-
                 'startingStops' => collect(),
-
                 'returnStops' => collect(),
             ]
         );
@@ -125,6 +126,17 @@ class AdminFixedScheduleController extends Controller
     |--------------------------------------------------------------------------
     | Load Master Route Roadway
     |--------------------------------------------------------------------------
+    |
+    | Example:
+    |
+    | Route 76
+    | Akkaraipattu
+    | Addalaichenai
+    | Kalmunai
+    | Batticaloa
+    | ...
+    | Trincomalee
+    |
     */
 
     public function routeStops(int $routeId)
@@ -145,17 +157,43 @@ class AdminFixedScheduleController extends Controller
                 $routeId
             )
             ->orderBy('stop_order')
-            ->select(
-                'id',
-                'route_id',
-                'name',
-                'stop_order',
-                'fare_stage_no',
-                'distance_from_origin_km',
-                'latitude',
-                'longitude'
-            )
-            ->get();
+            ->get()
+            ->map(function ($stop) {
+                return [
+                    'id' =>
+                        (int) $stop->id,
+
+                    'route_id' =>
+                        (int) $stop->route_id,
+
+                    'name' =>
+                        $stop->name,
+
+                    'stop_order' =>
+                        (int) $stop->stop_order,
+
+                    'fare_stage_no' =>
+                        $stop->fare_stage_no !== null
+                            ? (int) $stop->fare_stage_no
+                            : null,
+
+                    'distance_from_origin_km' =>
+                        (float) (
+                            $stop->distance_from_origin_km
+                            ??
+                            $stop->distance_from_origin
+                            ??
+                            0
+                        ),
+
+                    'latitude' =>
+                        $stop->latitude ?? null,
+
+                    'longitude' =>
+                        $stop->longitude ?? null,
+                ];
+            })
+            ->values();
 
         return response()->json([
             'success' => true,
@@ -178,6 +216,9 @@ class AdminFixedScheduleController extends Controller
 
                 'distance_km' =>
                     $route->distance_km,
+
+                'duration_minutes' =>
+                    $route->duration_minutes,
             ],
 
             'stops' =>
@@ -227,83 +268,85 @@ class AdminFixedScheduleController extends Controller
                 'return'
             );
 
-        DB::transaction(
-            function () use (
-                $data,
-                $request,
-                $startingStops,
-                $returnStops
-            ) {
-                $serviceId =
-                    DB::table(
-                        'fixed_services'
-                    )->insertGetId([
-                        'operator_id' =>
-                            $data['operator_id'],
-
-                        'route_id' =>
-                            $data['route_id'],
-
-                        'bus_id' =>
-                            $data['bus_id'],
-
-                        'service_name' =>
-                            !empty(
-                                $data['service_name']
-                            )
-                                ? trim(
-                                    $data['service_name']
-                                )
-                                : null,
-
-                        'starting_time' =>
-                            $this->getFirstTime(
-                                $startingStops
-                            ),
-
-                        'return_time' =>
-                            $this->getFirstTime(
-                                $returnStops
-                            ),
-
-                        'is_active' =>
-                            $request->boolean(
-                                'is_active'
-                            ),
-
-                        'is_published' =>
-                            $request->boolean(
-                                'is_published'
-                            ),
-
-                        'created_at' =>
-                            now(),
-
-                        'updated_at' =>
-                            now(),
-                    ]);
-
-                $this->saveStops(
-                    $serviceId,
-                    'starting',
-                    $startingStops
-                );
-
-                $this->saveStops(
-                    $serviceId,
-                    'return',
+        $serviceId =
+            DB::transaction(
+                function () use (
+                    $data,
+                    $request,
+                    $startingStops,
                     $returnStops
-                );
-            }
-        );
+                ) {
+                    $serviceId =
+                        DB::table(
+                            'fixed_services'
+                        )->insertGetId([
+                            'operator_id' =>
+                                $data['operator_id'],
+
+                            'route_id' =>
+                                $data['route_id'],
+
+                            'bus_id' =>
+                                $data['bus_id'],
+
+                            'service_name' =>
+                                !empty($data['service_name'])
+                                    ? trim(
+                                        $data['service_name']
+                                    )
+                                    : null,
+
+                            'starting_time' =>
+                                $this->getFirstTime(
+                                    $startingStops
+                                ),
+
+                            'return_time' =>
+                                $this->getFirstTime(
+                                    $returnStops
+                                ),
+
+                            'is_active' =>
+                                $request->boolean(
+                                    'is_active'
+                                ),
+
+                            'is_published' =>
+                                $request->boolean(
+                                    'is_published'
+                                ),
+
+                            'created_at' =>
+                                now(),
+
+                            'updated_at' =>
+                                now(),
+                        ]);
+
+                    $this->saveStops(
+                        $serviceId,
+                        'starting',
+                        $startingStops
+                    );
+
+                    $this->saveStops(
+                        $serviceId,
+                        'return',
+                        $returnStops
+                    );
+
+                    return $serviceId;
+                }
+            );
 
         return redirect()
             ->route(
-                'admin.fixed-schedules.index'
+                'admin.fixed-schedules.edit',
+                $serviceId
             )
             ->with(
                 'success',
-                'Fixed bus service created successfully.'
+                'Daily bus service created successfully.'
             );
     }
 
@@ -335,24 +378,18 @@ class AdminFixedScheduleController extends Controller
             ->orderBy('origin')
             ->get();
 
-        $buses = DB::table('buses')
-            ->where('is_active', true)
-            ->orderBy('bus_number')
-            ->get();
-
-        /*
-         * FIX:
-         * orderBy('name') was causing the 500 error.
-         */
         $operators = DB::table('operators')
             ->where('status', 'active')
             ->orderBy('company_name')
             ->get();
 
+        $buses = DB::table('buses')
+            ->where('is_active', true)
+            ->orderBy('bus_number')
+            ->get();
+
         $routeStops =
-            !empty(
-                $service->route_id
-            )
+            !empty($service->route_id)
                 ? DB::table('route_stops')
                     ->where(
                         'route_id',
@@ -379,8 +416,8 @@ class AdminFixedScheduleController extends Controller
             compact(
                 'service',
                 'routes',
-                'buses',
                 'operators',
+                'buses',
                 'routeStops',
                 'startingStops',
                 'returnStops'
@@ -473,9 +510,7 @@ class AdminFixedScheduleController extends Controller
                             $data['bus_id'],
 
                         'service_name' =>
-                            !empty(
-                                $data['service_name']
-                            )
+                            !empty($data['service_name'])
                                 ? trim(
                                     $data['service_name']
                                 )
@@ -506,8 +541,9 @@ class AdminFixedScheduleController extends Controller
                     ]);
 
                 /*
-                 * Rebuild this service's
-                 * booking-point timetable.
+                 * Rebuild service booking points.
+                 *
+                 * Master Route remains unchanged.
                  */
                 DB::table(
                     'fixed_service_stops'
@@ -539,7 +575,7 @@ class AdminFixedScheduleController extends Controller
             )
             ->with(
                 'success',
-                'Fixed bus service updated successfully.'
+                'Daily bus service updated successfully.'
             );
     }
 
@@ -551,23 +587,21 @@ class AdminFixedScheduleController extends Controller
 
     public function togglePublish(int $id)
     {
-        $service = DB::table(
-            'fixed_services'
-        )
-            ->where(
-                'id',
-                $id
+        $service =
+            DB::table(
+                'fixed_services'
             )
-            ->first();
+                ->where(
+                    'id',
+                    $id
+                )
+                ->first();
 
         abort_unless(
             $service,
             404
         );
 
-        /*
-         * Do not publish an unlinked legacy record.
-         */
         if (
             empty($service->operator_id)
             ||
@@ -577,7 +611,7 @@ class AdminFixedScheduleController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'service' =>
-                    'This service must be linked to an operator, bus and master route before it can be published.',
+                    'Link this service to an operator, bus and Master Route before publishing.',
             ]);
         }
 
@@ -611,14 +645,15 @@ class AdminFixedScheduleController extends Controller
 
     public function toggleActive(int $id)
     {
-        $service = DB::table(
-            'fixed_services'
-        )
-            ->where(
-                'id',
-                $id
+        $service =
+            DB::table(
+                'fixed_services'
             )
-            ->first();
+                ->where(
+                    'id',
+                    $id
+                )
+                ->first();
 
         abort_unless(
             $service,
@@ -655,24 +690,21 @@ class AdminFixedScheduleController extends Controller
 
     public function destroy(int $id)
     {
-        $service = DB::table(
-            'fixed_services'
-        )
-            ->where(
-                'id',
-                $id
+        $service =
+            DB::table(
+                'fixed_services'
             )
-            ->first();
+                ->where(
+                    'id',
+                    $id
+                )
+                ->first();
 
         abort_unless(
             $service,
             404
         );
 
-        /*
-         * Do not delete a service already
-         * linked to Trip records.
-         */
         $hasTrips =
             DB::table('trips')
                 ->where(
@@ -684,7 +716,7 @@ class AdminFixedScheduleController extends Controller
         if ($hasTrips) {
             throw ValidationException::withMessages([
                 'service' =>
-                    'This bus service cannot be deleted because trips already use it. Disable the service instead.',
+                    'This service cannot be deleted because trips already use it. Disable the service instead.',
             ]);
         }
 
@@ -716,13 +748,13 @@ class AdminFixedScheduleController extends Controller
             )
             ->with(
                 'success',
-                'Fixed bus service deleted successfully.'
+                'Daily bus service deleted successfully.'
             );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Validation
+    | Validate Form
     |--------------------------------------------------------------------------
     */
 
@@ -755,7 +787,7 @@ class AdminFixedScheduleController extends Controller
             ],
 
             /*
-             * Starting booking points
+             * Starting
              */
             'starting_stops' => [
                 'required',
@@ -790,7 +822,7 @@ class AdminFixedScheduleController extends Controller
             ],
 
             /*
-             * Return booking points
+             * Return
              */
             'return_stops' => [
                 'required',
@@ -835,16 +867,17 @@ class AdminFixedScheduleController extends Controller
     private function validateMasterRoute(
         int $routeId
     ): void {
-        $route = DB::table('routes')
-            ->where(
-                'id',
-                $routeId
-            )
-            ->where(
-                'is_active',
-                true
-            )
-            ->first();
+        $route =
+            DB::table('routes')
+                ->where(
+                    'id',
+                    $routeId
+                )
+                ->where(
+                    'is_active',
+                    true
+                )
+                ->first();
 
         if (!$route) {
             throw ValidationException::withMessages([
@@ -871,7 +904,7 @@ class AdminFixedScheduleController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Prepare Stops
+    | Prepare / Validate Stops
     |--------------------------------------------------------------------------
     */
 
@@ -886,18 +919,14 @@ class AdminFixedScheduleController extends Controller
                     'route_id',
                     $routeId
                 )
-                ->orderBy(
-                    'stop_order'
-                )
+                ->orderBy('stop_order')
                 ->get()
                 ->keyBy('id');
 
-        if (
-            $routeStops->isEmpty()
-        ) {
+        if ($routeStops->isEmpty()) {
             throw ValidationException::withMessages([
                 'route_id' =>
-                    'Selected route does not contain roadway stops.',
+                    'Selected Master Route does not contain roadway stops.',
             ]);
         }
 
@@ -917,13 +946,9 @@ class AdminFixedScheduleController extends Controller
                     $routeStopId
                 );
 
-            /*
-             * Booking point must belong to
-             * the selected Master Route.
-             */
             if (!$routeStop) {
                 throw ValidationException::withMessages([
-                    "{$direction}_stops.{$index}.route_stop_id" =>
+                    "{$direction}_stops.$index.route_stop_id" =>
                         'Selected booking point does not belong to the selected Master Route.',
                 ]);
             }
@@ -948,19 +973,16 @@ class AdminFixedScheduleController extends Controller
                 !$departureTime
             ) {
                 throw ValidationException::withMessages([
-                    "{$direction}_stops.{$index}.arrival_time" =>
+                    "{$direction}_stops.$index.arrival_time" =>
                         'Enter an arrival time or departure time for every booking point.',
                 ]);
             }
 
             $prepared[] = [
                 'route_stop_id' =>
-                    (int) $routeStop->id,
+                    (int)
+                    $routeStop->id,
 
-                /*
-                 * Temporary DB compatibility only.
-                 * Operator never types stop_name.
-                 */
                 'stop_name' =>
                     $routeStop->name,
 
@@ -991,13 +1013,14 @@ class AdminFixedScheduleController extends Controller
         }
 
         /*
-         * Prevent duplicate stops.
+         * Duplicate stops not allowed.
          */
         $ids =
-            collect($prepared)
-                ->pluck(
-                    'route_stop_id'
-                );
+            collect(
+                $prepared
+            )->pluck(
+                'route_stop_id'
+            );
 
         if (
             $ids->unique()->count()
@@ -1011,7 +1034,9 @@ class AdminFixedScheduleController extends Controller
         }
 
         $orders =
-            collect($prepared)
+            collect(
+                $prepared
+            )
                 ->pluck(
                     'master_stop_order'
                 )
@@ -1019,20 +1044,11 @@ class AdminFixedScheduleController extends Controller
                 ->all();
 
         /*
-         * Starting:
-         *
-         * Akkaraipattu
-         *      ↓
-         * Kalmunai
-         *      ↓
-         * Batticaloa
-         *      ↓
-         * Trincomalee
+         * Starting direction:
+         * route order must increase.
          */
         if (
-            $direction
-            ===
-            'starting'
+            $direction === 'starting'
         ) {
             for (
                 $i = 1;
@@ -1053,20 +1069,11 @@ class AdminFixedScheduleController extends Controller
         }
 
         /*
-         * Return:
-         *
-         * Trincomalee
-         *      ↓
-         * Batticaloa
-         *      ↓
-         * Kalmunai
-         *      ↓
-         * Akkaraipattu
+         * Return direction:
+         * route order must decrease.
          */
         if (
-            $direction
-            ===
-            'return'
+            $direction === 'return'
         ) {
             for (
                 $i = 1;
@@ -1099,16 +1106,17 @@ class AdminFixedScheduleController extends Controller
         int $busId,
         int $operatorId
     ): void {
-        $bus = DB::table('buses')
-            ->where(
-                'id',
-                $busId
-            )
-            ->where(
-                'is_active',
-                true
-            )
-            ->first();
+        $bus =
+            DB::table('buses')
+                ->where(
+                    'id',
+                    $busId
+                )
+                ->where(
+                    'is_active',
+                    true
+                )
+                ->first();
 
         if (!$bus) {
             throw ValidationException::withMessages([
@@ -1118,7 +1126,8 @@ class AdminFixedScheduleController extends Controller
         }
 
         if (
-            (int) $bus->operator_id
+            (int)
+            $bus->operator_id
             !==
             $operatorId
         ) {
@@ -1131,12 +1140,8 @@ class AdminFixedScheduleController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Duplicate Service Validation
+    | Prevent Duplicate Service
     |--------------------------------------------------------------------------
-    |
-    | Prevent the exact same bus + route link from
-    | being created twice accidentally.
-    |
     */
 
     private function validateDuplicateService(
@@ -1174,9 +1179,7 @@ class AdminFixedScheduleController extends Controller
             );
         }
 
-        if (
-            $query->exists()
-        ) {
+        if ($query->exists()) {
             throw ValidationException::withMessages([
                 'bus_id' =>
                     'This bus is already linked to the selected Master Route.',
@@ -1200,65 +1203,65 @@ class AdminFixedScheduleController extends Controller
             as
             $index => $stop
         ) {
-            DB::table(
-                'fixed_service_stops'
-            )->insert([
+            $row = [
                 'fixed_service_id' =>
                     $serviceId,
 
                 'route_stop_id' =>
-                    $stop[
-                        'route_stop_id'
-                    ],
+                    $stop['route_stop_id'],
 
                 'direction' =>
                     $direction,
-
-                /*
-                 * Temporary backward compatibility.
-                 * Can be removed after stop_name
-                 * column is retired.
-                 */
-                'stop_name' =>
-                    $stop[
-                        'stop_name'
-                    ],
 
                 'stop_order' =>
                     $index + 1,
 
                 'arrival_time' =>
-                    $stop[
-                        'arrival_time'
-                    ],
+                    $stop['arrival_time'],
 
                 'departure_time' =>
-                    $stop[
-                        'departure_time'
-                    ],
+                    $stop['departure_time'],
 
                 'boarding_allowed' =>
-                    $stop[
-                        'boarding_allowed'
-                    ],
+                    $stop['boarding_allowed'],
 
                 'dropoff_allowed' =>
-                    $stop[
-                        'dropoff_allowed'
-                    ],
+                    $stop['dropoff_allowed'],
 
                 'created_at' =>
                     now(),
 
                 'updated_at' =>
                     now(),
-            ]);
+            ];
+
+            /*
+             * Temporary compatibility.
+             *
+             * Stop name always comes from
+             * Master Route roadway.
+             */
+            if (
+                Schema::hasColumn(
+                    'fixed_service_stops',
+                    'stop_name'
+                )
+            ) {
+                $row['stop_name'] =
+                    $stop['stop_name'];
+            }
+
+            DB::table(
+                'fixed_service_stops'
+            )->insert(
+                $row
+            );
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Get Service Stops
+    | Get Existing Service Stops
     |--------------------------------------------------------------------------
     */
 
@@ -1301,9 +1304,7 @@ class AdminFixedScheduleController extends Controller
                 'rs.name as stop_name',
 
                 'rs.stop_order as master_stop_order',
-
                 'rs.fare_stage_no',
-
                 'rs.distance_from_origin_km'
             )
             ->get();
@@ -1325,13 +1326,9 @@ class AdminFixedScheduleController extends Controller
         }
 
         return
-            $stops[0][
-                'departure_time'
-            ]
+            $stops[0]['departure_time']
             ??
-            $stops[0][
-                'arrival_time'
-            ]
+            $stops[0]['arrival_time']
             ??
             null;
     }
