@@ -264,12 +264,8 @@ class TripStaffController extends Controller
 
         $now = $this->now();
         $scheduledAt = $this->scheduledDateTime($trip);
-
-        $startFrom = $scheduledAt->copy()
-            ->subMinutes(self::START_WINDOW_MINUTES);
-
-        $startUntil = $scheduledAt->copy()
-            ->addMinutes(self::START_WINDOW_MINUTES);
+        $startFrom = $scheduledAt->copy()->subMinutes(self::START_WINDOW_MINUTES);
+        $startUntil = $scheduledAt->copy()->addMinutes(self::START_WINDOW_MINUTES);
 
         if ($now->lt($startFrom)) {
             return response()->json([
@@ -391,10 +387,6 @@ class TripStaffController extends Controller
             ], 422);
         }
 
-        /*
-         * Support both speed and speed_kmh.
-         * Flutter currently may send "speed".
-         */
         if (!$request->has('speed_kmh') && $request->has('speed')) {
             $request->merge([
                 'speed_kmh' => $request->input('speed'),
@@ -500,6 +492,16 @@ class TripStaffController extends Controller
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Passenger List
+    |--------------------------------------------------------------------------
+    |
+    | Primary passenger identity comes from bookings.
+    | Traveller seat and gender come from booking_passengers.
+    |
+    */
+
     public function passengers(Request $request, $id)
     {
         $staff = $this->staff($request);
@@ -518,8 +520,6 @@ class TripStaffController extends Controller
             ->where('bookings.payment_status', 'paid')
             ->select(
                 'booking_passengers.id as booking_passenger_id',
-                'booking_passengers.passenger_name',
-                'booking_passengers.nic',
                 'booking_passengers.seat_number',
                 'booking_passengers.gender',
                 'booking_passengers.checked_in_at',
@@ -533,26 +533,36 @@ class TripStaffController extends Controller
             ->orderBy('booking_passengers.seat_number')
             ->get()
             ->map(function ($row) {
-                /*
-                 * Do not copy one booking-level passenger identity
-                 * to every traveller.
-                 */
-                $row->passenger_name = $row->passenger_name
-                    ? trim((string) $row->passenger_name)
-                    : '-';
+                $name = trim((string) ($row->primary_passenger_name ?? ''));
+                $nic = strtoupper(trim((string) ($row->primary_passenger_nic ?? '')));
 
-                $row->nic = $row->nic
-                    ? strtoupper(trim((string) $row->nic))
-                    : '-';
+                return [
+                    'booking_passenger_id' => (int) $row->booking_passenger_id,
+                    'booking_id' => (int) $row->booking_id,
+                    'booking_reference' => $row->booking_reference,
 
-                $row->gender = $row->gender
-                    ? strtoupper(trim((string) $row->gender))
-                    : null;
+                    'passenger_name' => $name !== '' ? $name : '-',
+                    'name' => $name !== '' ? $name : '-',
 
-                $row->checked_in = $row->checked_in_at !== null;
+                    'nic' => $nic !== '' ? $nic : '-',
+                    'passenger_nic' => $nic !== '' ? $nic : '-',
 
-                return $row;
-            });
+                    'primary_passenger_name' => $name !== '' ? $name : '-',
+                    'primary_passenger_nic' => $nic !== '' ? $nic : '-',
+
+                    'seat_number' => $row->seat_number ?: '-',
+                    'gender' => $row->gender
+                        ? strtoupper(trim((string) $row->gender))
+                        : null,
+
+                    'boarding_stop' => $row->boarding_stop ?: '-',
+                    'dropoff_stop' => $row->dropoff_stop ?: '-',
+
+                    'checked_in_at' => $row->checked_in_at,
+                    'checked_in' => $row->checked_in_at !== null,
+                ];
+            })
+            ->values();
 
         return [
             'success' => true,
@@ -634,6 +644,12 @@ class TripStaffController extends Controller
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Verify QR Ticket
+    |--------------------------------------------------------------------------
+    */
+
     public function verifyTicket(Request $request)
     {
         $staff = $this->staff($request);
@@ -670,10 +686,14 @@ class TripStaffController extends Controller
             ], 422);
         }
 
-        if (strtolower((string) $booking->ticket_status) === 'cancelled') {
+        if (in_array(
+            strtolower((string) $booking->ticket_status),
+            ['cancelled', 'canceled', 'expired', 'invalid', 'refunded'],
+            true
+        )) {
             return response()->json([
                 'success' => false,
-                'message' => 'This ticket has been cancelled.',
+                'message' => 'This ticket is not valid.',
             ], 422);
         }
 
@@ -683,6 +703,12 @@ class TripStaffController extends Controller
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Passenger Check-In
+    |--------------------------------------------------------------------------
+    */
+
     public function checkIn(Request $request)
     {
         $staff = $this->staff($request);
@@ -690,11 +716,7 @@ class TripStaffController extends Controller
         $data = $request->validate([
             'ticket_code' => ['required', 'string', 'max:255'],
             'trip_id' => ['nullable', 'integer', 'exists:trips,id'],
-            'booking_passenger_id' => [
-                'nullable',
-                'integer',
-                'exists:booking_passengers,id',
-            ],
+            'booking_passenger_id' => ['nullable', 'integer', 'exists:booking_passengers,id'],
         ]);
 
         $booking = $this->ticketBooking(
@@ -762,10 +784,7 @@ class TripStaffController extends Controller
                 'updated_at' => $now,
             ];
 
-            if (Schema::hasColumn(
-                'booking_passengers',
-                'checked_in_by_staff_id'
-            )) {
+            if (Schema::hasColumn('booking_passengers', 'checked_in_by_staff_id')) {
                 $update['checked_in_by_staff_id'] = $staff->id;
             }
 
@@ -791,16 +810,28 @@ class TripStaffController extends Controller
             }
         });
 
+        $name = trim((string) ($booking->primary_passenger_name ?? ''));
+        $nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? ''));
+
         return [
             'success' => true,
             'message' => 'Passenger checked in successfully.',
             'booking_passenger_id' => (int) $passenger->id,
-            'passenger_name' => $passenger->passenger_name ?: '-',
-            'nic' => $passenger->nic ?: '-',
+
+            'passenger_name' => $name !== '' ? $name : '-',
+            'name' => $name !== '' ? $name : '-',
+
+            'nic' => $nic !== '' ? $nic : '-',
+            'passenger_nic' => $nic !== '' ? $nic : '-',
+
+            'primary_passenger_name' => $name !== '' ? $name : '-',
+            'primary_passenger_nic' => $nic !== '' ? $nic : '-',
+
             'seat_number' => $passenger->seat_number ?: '-',
             'gender' => $passenger->gender
                 ? strtoupper((string) $passenger->gender)
                 : null,
+
             'checked_in' => true,
             'checked_in_at' => $now->toDateTimeString(),
         ];
@@ -855,22 +886,37 @@ class TripStaffController extends Controller
             ->first();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ticket Payload
+    |--------------------------------------------------------------------------
+    */
+
     private function ticketPayload($booking): array
     {
+        $name = trim((string) ($booking->primary_passenger_name ?? ''));
+        $nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? ''));
+
         $passengers = DB::table('booking_passengers')
             ->where('booking_id', $booking->booking_id)
             ->orderBy('seat_number')
             ->get()
-            ->map(function ($passenger) {
+            ->map(function ($passenger) use ($name, $nic) {
                 return [
                     'id' => (int) $passenger->id,
                     'booking_passenger_id' => (int) $passenger->id,
-                    'passenger_name' => $passenger->passenger_name ?: '-',
-                    'name' => $passenger->passenger_name ?: '-',
-                    'passenger_nic' => $passenger->nic ?: '-',
-                    'nic' => $passenger->nic ?: '-',
+
+                    'passenger_name' => $name !== '' ? $name : '-',
+                    'name' => $name !== '' ? $name : '-',
+
+                    'passenger_nic' => $nic !== '' ? $nic : '-',
+                    'nic' => $nic !== '' ? $nic : '-',
+
                     'seat_number' => $passenger->seat_number ?: '-',
-                    'gender' => $passenger->gender ?? null,
+                    'gender' => $passenger->gender
+                        ? strtoupper((string) $passenger->gender)
+                        : null,
+
                     'checked_in_at' => $passenger->checked_in_at,
                     'checked_in' => $passenger->checked_in_at !== null,
                 ];
@@ -880,17 +926,27 @@ class TripStaffController extends Controller
         return [
             'booking_id' => (int) $booking->booking_id,
             'booking_reference' => $booking->booking_reference,
+
             'company_name' => $booking->company_name,
             'bus_name' => $booking->bus_name,
             'bus_number' => $booking->bus_number,
+
             'trip_id' => (int) $booking->trip_id,
             'trip_code' => $booking->trip_code,
             'trip_status' => $booking->trip_status,
+
             'ticket_status' => $booking->ticket_status ?? 'valid',
-            'primary_passenger_name' => $booking->primary_passenger_name ?: '-',
-            'primary_passenger_nic' => $booking->primary_passenger_nic ?: '-',
+
+            'primary_passenger_name' => $name !== '' ? $name : '-',
+            'primary_passenger_nic' => $nic !== '' ? $nic : '-',
+
+            'passenger_name' => $name !== '' ? $name : '-',
+            'passenger_nic' => $nic !== '' ? $nic : '-',
+            'nic' => $nic !== '' ? $nic : '-',
+
             'boarding_stop' => $booking->boarding_stop ?: '-',
             'dropoff_stop' => $booking->dropoff_stop ?: '-',
+
             'passengers' => $passengers,
         ];
     }
