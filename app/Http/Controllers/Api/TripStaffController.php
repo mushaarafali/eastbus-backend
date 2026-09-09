@@ -810,8 +810,8 @@ class TripStaffController extends Controller
             }
         });
 
-        $name = trim((string) ($booking->primary_passenger_name ?? ''));
-        $nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? ''));
+$name = trim((string) ($booking->primary_passenger_name ?? ''));
+$nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? '')));
 
         return [
             'success' => true,
@@ -894,9 +894,9 @@ class TripStaffController extends Controller
 
     private function ticketPayload($booking): array
     {
-        $name = trim((string) ($booking->primary_passenger_name ?? ''));
-        $nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? ''));
-
+    $name = trim((string) ($booking->primary_passenger_name ?? ''));
+    $nic = strtoupper(trim((string) ($booking->primary_passenger_nic ?? '')));
+;
         $passengers = DB::table('booking_passengers')
             ->where('booking_id', $booking->booking_id)
             ->orderBy('seat_number')
