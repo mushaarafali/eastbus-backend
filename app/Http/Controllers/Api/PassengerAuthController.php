@@ -12,263 +12,191 @@ use Illuminate\Support\Str;
 
 class PassengerAuthController extends Controller
 {
-    private EastBusMailService $mailService;
+    private const OTP_EXPIRY_MINUTES = 10;
+    private const FAILED_LOGIN_EXPIRY_MINUTES = 30;
+    private const SECURITY_ALERT_ATTEMPT = 3;
 
-    public function __construct(EastBusMailService $mailService)
-    {
-        $this->mailService = $mailService;
+    public function __construct(
+        private EastBusMailService $mailService
+    ) {
     }
 
     /*
     |--------------------------------------------------------------------------
-    | REGISTER PASSENGER
+    | Register Passenger
     |--------------------------------------------------------------------------
     */
 
     public function register(Request $request)
     {
         $data = $request->validate([
-            'full_name' => [
-                'required',
-                'string',
-                'max:150',
-            ],
-
-            'email' => [
-                'required',
-                'email',
-                'max:150',
-                'unique:users,email',
-            ],
-
-            'phone' => [
-                'required',
-                'string',
-                'regex:/^\+94[0-9]{9}$/',
-                'unique:users,phone',
-            ],
-
-            'password' => [
-                'required',
-                'string',
-                'min:8',
-            ],
+            'full_name' => ['required', 'string', 'max:150'],
+            'email' => ['required', 'email', 'max:150'],
+            'phone' => ['required', 'string', 'regex:/^\+94[0-9]{9}$/'],
+            'password' => ['required', 'string', 'min:8'],
         ], [
-            'phone.regex' =>
-                'Phone number must use Sri Lankan format: +94XXXXXXXXX',
+            'phone.regex' => 'Phone number must use Sri Lankan format: +94XXXXXXXXX',
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
+        $fullName = trim($data['full_name']);
+        $email = strtolower(trim($data['email']));
+        $phone = trim($data['phone']);
 
-        $otp = (string) random_int(
-            100000,
-            999999
-        );
+        if (
+            DB::table('users')
+                ->whereRaw('LOWER(email) = ?', [$email])
+                ->exists()
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This email address is already registered.',
+                'errors' => [
+                    'email' => ['This email address is already registered.'],
+                ],
+            ], 422);
+        }
 
-        $passengerId = DB::table('users')
-            ->insertGetId([
-                'name' =>
-                    trim($data['full_name']),
+        if (
+            DB::table('users')
+                ->where('phone', $phone)
+                ->exists()
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This phone number is already registered.',
+                'errors' => [
+                    'phone' => ['This phone number is already registered.'],
+                ],
+            ], 422);
+        }
 
-                'email' =>
-                    $email,
+        $otp = $this->generateOtp();
 
-                'phone' =>
-                    trim($data['phone']),
-
-                'password' =>
-                    Hash::make(
-                        $data['password']
-                    ),
-
-                'role' =>
-                    'PASSENGER',
-
-                'is_active' =>
-                    true,
-
-                'status' =>
-                    'PENDING',
-
-                'email_verified_at' =>
-                    null,
-
-                'otp_code' =>
-                    $otp,
-
-                'otp_expires_at' =>
-                    now()->addMinutes(10),
-
-                'created_at' =>
-                    now(),
-
-                'updated_at' =>
-                    now(),
-            ]);
+        $passengerId = DB::table('users')->insertGetId([
+            'name' => $fullName,
+            'email' => $email,
+            'phone' => $phone,
+            'password' => Hash::make($data['password']),
+            'role' => 'PASSENGER',
+            'is_active' => true,
+            'status' => 'PENDING',
+            'email_verified_at' => null,
+            'otp_code' => $otp,
+            'otp_expires_at' => now()->addMinutes(self::OTP_EXPIRY_MINUTES),
+            'password_reset_otp' => null,
+            'password_reset_expires_at' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         try {
             $this->mailService->otp(
                 $email,
-                trim($data['full_name']),
+                $fullName,
                 $otp,
                 'Email Verification'
             );
         } catch (\Throwable $e) {
+            report($e);
+
             DB::table('users')
-                ->where(
-                    'id',
-                    $passengerId
-                )
+                ->where('id', $passengerId)
                 ->delete();
 
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Unable to send verification email. Please try again.',
+                'message' => 'Unable to send verification email. Please try again.',
             ], 500);
         }
 
         return response()->json([
             'success' => true,
-
-            'message' =>
-                'Registration successful. A verification OTP has been sent to your email.',
-
-            'passenger_id' =>
-                $passengerId,
-
-            'email' =>
-                $email,
+            'message' => 'Registration successful. A verification OTP has been sent to your email.',
+            'passenger_id' => $passengerId,
+            'email' => $email,
+            'requires_verification' => true,
+            'otp_expires_in_minutes' => self::OTP_EXPIRY_MINUTES,
         ], 201);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | VERIFY REGISTRATION OTP
+    | Verify Registration OTP
     |--------------------------------------------------------------------------
     */
 
     public function verifyOtp(Request $request)
     {
         $data = $request->validate([
-            'email' => [
-                'required',
-                'email',
-            ],
-
-            'otp' => [
-                'required',
-                'string',
-                'size:6',
-            ],
+            'email' => ['required', 'email'],
+            'otp' => ['required', 'digits:6'],
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
+        $email = strtolower(trim($data['email']));
+        $otp = trim((string) $data['otp']);
 
-        $user = DB::table('users')
-            ->where(
-                'email',
-                $email
-            )
-            ->where(
-                'role',
-                'PASSENGER'
-            )
-            ->first();
+        $user = $this->findPassengerByEmail($email);
 
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Passenger account not found.',
+                'message' => 'Passenger account not found.',
             ], 404);
         }
 
         if (
-            $user->status === 'ACTIVE' &&
+            strtoupper((string) $user->status) === 'ACTIVE' &&
             $user->email_verified_at !== null
         ) {
             return response()->json([
                 'success' => true,
-                'message' =>
-                    'Email is already verified. You can login.',
+                'message' => 'Email is already verified. You can login.',
+                'already_verified' => true,
             ]);
         }
 
         if (
             empty($user->otp_code) ||
-            $user->otp_code !== $data['otp']
+            !hash_equals(
+                (string) $user->otp_code,
+                $otp
+            )
         ) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Invalid verification OTP.',
+                'message' => 'Invalid verification OTP.',
             ], 422);
         }
 
         if (
             empty($user->otp_expires_at) ||
-            now()->greaterThan(
-                $user->otp_expires_at
-            )
+            now()->greaterThan($user->otp_expires_at)
         ) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'OTP has expired. Please request a new OTP.',
+                'message' => 'OTP has expired. Please request a new OTP.',
+                'otp_expired' => true,
             ], 422);
         }
 
         DB::table('users')
-            ->where(
-                'id',
-                $user->id
-            )
+            ->where('id', $user->id)
             ->update([
-                'status' =>
-                    'ACTIVE',
-
-                'is_active' =>
-                    true,
-
-                'email_verified_at' =>
-                    now(),
-
-                'otp_code' =>
-                    null,
-
-                'otp_expires_at' =>
-                    null,
-
-                'updated_at' =>
-                    now(),
+                'status' => 'ACTIVE',
+                'is_active' => true,
+                'email_verified_at' => now(),
+                'otp_code' => null,
+                'otp_expires_at' => null,
+                'updated_at' => now(),
             ]);
 
-        /*
-         * Reload user after verification.
-         */
         $verifiedUser = DB::table('users')
-            ->where(
-                'id',
-                $user->id
-            )
+            ->where('id', $user->id)
             ->first();
 
-        /*
-         * Send Welcome Email.
-         *
-         * Welcome email failure must NOT undo
-         * successful account verification.
-         */
         if ($verifiedUser) {
             try {
-                $this->mailService->welcome(
-                    $verifiedUser
-                );
+                $this->mailService->welcome($verifiedUser);
             } catch (\Throwable $e) {
                 report($e);
             }
@@ -276,79 +204,51 @@ class PassengerAuthController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' =>
-                'Email verified successfully. You can now login.',
+            'message' => 'Email verified successfully. You can now login.',
+            'already_verified' => false,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | RESEND REGISTRATION OTP
+    | Resend Registration OTP
     |--------------------------------------------------------------------------
     */
 
     public function resendOtp(Request $request)
     {
         $data = $request->validate([
-            'email' => [
-                'required',
-                'email',
-            ],
+            'email' => ['required', 'email'],
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
-
-        $user = DB::table('users')
-            ->where(
-                'email',
-                $email
-            )
-            ->where(
-                'role',
-                'PASSENGER'
-            )
-            ->first();
+        $email = strtolower(trim($data['email']));
+        $user = $this->findPassengerByEmail($email);
 
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Passenger account not found.',
+                'message' => 'Passenger account not found.',
             ], 404);
         }
 
         if (
-            $user->status === 'ACTIVE' &&
+            strtoupper((string) $user->status) === 'ACTIVE' &&
             $user->email_verified_at !== null
         ) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'This account is already verified.',
+                'message' => 'This account is already verified.',
             ], 422);
         }
 
-        $otp = (string) random_int(
-            100000,
-            999999
-        );
+        $otp = $this->generateOtp();
 
         DB::table('users')
-            ->where(
-                'id',
-                $user->id
-            )
+            ->where('id', $user->id)
             ->update([
-                'otp_code' =>
-                    $otp,
-
-                'otp_expires_at' =>
-                    now()->addMinutes(10),
-
-                'updated_at' =>
-                    now(),
+                'otp_code' => $otp,
+                'otp_expires_at' => now()->addMinutes(self::OTP_EXPIRY_MINUTES),
+                'updated_at' => now(),
             ]);
 
         try {
@@ -359,245 +259,167 @@ class PassengerAuthController extends Controller
                 'Email Verification'
             );
         } catch (\Throwable $e) {
+            report($e);
+
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Unable to send OTP email. Please try again.',
+                'message' => 'Unable to send OTP email. Please try again.',
             ], 500);
         }
 
         return response()->json([
             'success' => true,
-            'message' =>
-                'A new verification OTP has been sent to your email.',
+            'message' => 'A new verification OTP has been sent to your email.',
+            'email' => $user->email,
+            'otp_expires_in_minutes' => self::OTP_EXPIRY_MINUTES,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | LOGIN
+    | Login
     |--------------------------------------------------------------------------
     */
 
     public function login(Request $request)
     {
         $data = $request->validate([
-            'login' => [
-                'required',
-                'string',
-            ],
-
-            'password' => [
-                'required',
-                'string',
-            ],
+            'login' => ['required', 'string', 'max:150'],
+            'password' => ['required', 'string'],
         ]);
 
-        $login = trim(
-            $data['login']
-        );
+        $login = trim($data['login']);
 
         $user = DB::table('users')
-            ->where(
-                'role',
-                'PASSENGER'
-            )
+            ->where('role', 'PASSENGER')
             ->where(function ($query) use ($login) {
                 $query
-                    ->where(
-                        'email',
-                        strtolower($login)
-                    )
-                    ->orWhere(
-                        'phone',
-                        $login
-                    );
+                    ->whereRaw('LOWER(email) = ?', [
+                        strtolower($login),
+                    ])
+                    ->orWhere('phone', $login);
             })
             ->first();
 
-        /*
-         * Account not found.
-         */
-        if (!$user) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Invalid email/phone or password.',
-            ], 401);
-        }
-
-        /*
-         * Wrong Password.
-         */
         if (
-            !Hash::check(
-                $data['password'],
-                $user->password
-            )
+            !$user ||
+            !Hash::check($data['password'], $user->password)
         ) {
-            $this->handleFailedLogin(
-                $request,
-                $user
-            );
+            if ($user) {
+                $this->handleFailedLogin(
+                    $request,
+                    $user
+                );
+            }
 
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Invalid email/phone or password.',
+                'message' => 'Invalid email/phone or password.',
             ], 401);
         }
 
-        /*
-         * Correct login.
-         * Clear failed-login counter.
-         */
         $this->clearFailedLogin(
             $request,
             $user
         );
 
-        if (!$user->is_active) {
+        if (!(bool) $user->is_active) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Your passenger account has been deactivated.',
+                'message' => 'Your passenger account has been deactivated.',
             ], 403);
         }
 
         if (
-            $user->status !== 'ACTIVE' ||
+            strtoupper((string) $user->status) !== 'ACTIVE' ||
             $user->email_verified_at === null
         ) {
             return response()->json([
                 'success' => false,
-
-                'message' =>
-                    'Please verify your email before login.',
-
-                'requires_verification' =>
-                    true,
-
-                'email' =>
-                    $user->email,
+                'message' => 'Please verify your email before login.',
+                'requires_verification' => true,
+                'email' => $user->email,
             ], 403);
         }
 
         $plainToken = Str::random(64);
+        $tokenHash = hash('sha256', $plainToken);
 
-        $tokenHash = hash(
-            'sha256',
-            $plainToken
-        );
-
-        DB::table(
-            'passenger_api_tokens'
-        )->insert([
-            'user_id' =>
-                $user->id,
-
-            'token_hash' =>
-                $tokenHash,
-
-            'created_at' =>
-                now(),
-
-            'updated_at' =>
-                now(),
+        DB::table('passenger_api_tokens')->insert([
+            'user_id' => $user->id,
+            'token_hash' => $tokenHash,
+            'created_at' => now(),
+            'updated_at' => now(),
         ]);
 
         return response()->json([
             'success' => true,
-
-            'message' =>
-                'Login successful.',
-
-            'token' =>
-                $plainToken,
+            'message' => 'Login successful.',
+            'token' => $plainToken,
 
             'passenger' => [
-                'id' =>
-                    $user->id,
-
-                'full_name' =>
-                    $user->name,
-
-                'email' =>
-                    $user->email,
-
-                'phone' =>
-                    $user->phone,
-
-                'role' =>
-                    $user->role,
+                'id' => (int) $user->id,
+                'full_name' => $user->name,
+                'name' => $user->name,
+                'email' => $user->email,
+                'phone' => $user->phone,
+                'role' => $user->role,
+                'email_verified' =>
+                    $user->email_verified_at !== null,
             ],
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | FORGOT PASSWORD
+    | Forgot Password
     |--------------------------------------------------------------------------
     */
 
     public function forgotPassword(Request $request)
     {
         $data = $request->validate([
-            'email' => [
-                'required',
-                'email',
-            ],
+            'email' => ['required', 'email'],
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
-
-        $user = DB::table('users')
-            ->where(
-                'email',
-                $email
-            )
-            ->where(
-                'role',
-                'PASSENGER'
-            )
-            ->first();
+        $email = strtolower(trim($data['email']));
+        $user = $this->findPassengerByEmail($email);
 
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'No passenger account was found with this email.',
+                'message' => 'No passenger account was found with this email.',
             ], 404);
         }
 
-        if (!$user->is_active) {
+        if (!(bool) $user->is_active) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'This passenger account is currently inactive.',
+                'message' => 'This passenger account is currently inactive.',
             ], 403);
         }
 
-        $otp = (string) random_int(
-            100000,
-            999999
-        );
+        if (
+            strtoupper((string) $user->status) !== 'ACTIVE' ||
+            $user->email_verified_at === null
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please verify your email before resetting your password.',
+                'requires_verification' => true,
+                'email' => $user->email,
+            ], 403);
+        }
+
+        $otp = $this->generateOtp();
 
         DB::table('users')
-            ->where(
-                'id',
-                $user->id
-            )
+            ->where('id', $user->id)
             ->update([
-                'password_reset_otp' =>
-                    $otp,
-
+                'password_reset_otp' => $otp,
                 'password_reset_expires_at' =>
-                    now()->addMinutes(10),
-
-                'updated_at' =>
-                    now(),
+                    now()->addMinutes(self::OTP_EXPIRY_MINUTES),
+                'updated_at' => now(),
             ]);
 
         try {
@@ -608,128 +430,74 @@ class PassengerAuthController extends Controller
                 'Password Reset'
             );
         } catch (\Throwable $e) {
+            report($e);
+
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Unable to send password reset email. Please try again.',
+                'message' => 'Unable to send password reset email. Please try again.',
             ], 500);
         }
 
         return response()->json([
             'success' => true,
-
-            'message' =>
-                'A password reset OTP has been sent to your email.',
-
-            'email' =>
-                $user->email,
+            'message' => 'A password reset OTP has been sent to your email.',
+            'email' => $user->email,
+            'otp_expires_in_minutes' => self::OTP_EXPIRY_MINUTES,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | VERIFY PASSWORD RESET OTP
+    | Verify Password Reset OTP
     |--------------------------------------------------------------------------
     */
 
     public function verifyResetOtp(Request $request)
     {
         $data = $request->validate([
-            'email' => [
-                'required',
-                'email',
-            ],
-
-            'otp' => [
-                'required',
-                'string',
-                'size:6',
-            ],
+            'email' => ['required', 'email'],
+            'otp' => ['required', 'digits:6'],
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
+        $email = strtolower(trim($data['email']));
+        $otp = trim((string) $data['otp']);
 
-        $user = DB::table('users')
-            ->where(
-                'email',
-                $email
-            )
-            ->where(
-                'role',
-                'PASSENGER'
-            )
-            ->first();
+        $user = $this->findPassengerByEmail($email);
 
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Passenger account not found.',
+                'message' => 'Passenger account not found.',
             ], 404);
         }
 
-        if (
-            empty(
-                $user->password_reset_otp
-            ) ||
-            $user->password_reset_otp
-                !== $data['otp']
-        ) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Invalid password reset OTP.',
-            ], 422);
-        }
+        $validation = $this->validateResetOtp(
+            $user,
+            $otp
+        );
 
-        if (
-            empty(
-                $user->password_reset_expires_at
-            ) ||
-            now()->greaterThan(
-                $user->password_reset_expires_at
-            )
-        ) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Password reset OTP has expired.',
-            ], 422);
+        if ($validation !== null) {
+            return $validation;
         }
 
         return response()->json([
             'success' => true,
-
-            'message' =>
-                'OTP verified successfully.',
-
-            'email' =>
-                $user->email,
+            'message' => 'OTP verified successfully.',
+            'email' => $user->email,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | RESET PASSWORD
+    | Reset Password
     |--------------------------------------------------------------------------
     */
 
     public function resetPassword(Request $request)
     {
         $data = $request->validate([
-            'email' => [
-                'required',
-                'email',
-            ],
-
-            'otp' => [
-                'required',
-                'string',
-                'size:6',
-            ],
-
+            'email' => ['required', 'email'],
+            'otp' => ['required', 'digits:6'],
             'password' => [
                 'required',
                 'string',
@@ -738,114 +506,63 @@ class PassengerAuthController extends Controller
             ],
         ]);
 
-        $email = strtolower(
-            trim($data['email'])
-        );
+        $email = strtolower(trim($data['email']));
+        $otp = trim((string) $data['otp']);
 
-        $user = DB::table('users')
-            ->where(
-                'email',
-                $email
-            )
-            ->where(
-                'role',
-                'PASSENGER'
-            )
-            ->first();
+        $user = $this->findPassengerByEmail($email);
 
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Passenger account not found.',
+                'message' => 'Passenger account not found.',
             ], 404);
         }
 
-        if (
-            empty(
-                $user->password_reset_otp
-            ) ||
-            $user->password_reset_otp
-                !== $data['otp']
-        ) {
+        if (!(bool) $user->is_active) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Invalid password reset OTP.',
-            ], 422);
+                'message' => 'This passenger account is currently inactive.',
+            ], 403);
         }
 
-        if (
-            empty(
-                $user->password_reset_expires_at
-            ) ||
-            now()->greaterThan(
-                $user->password_reset_expires_at
-            )
-        ) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Password reset OTP has expired.',
-            ], 422);
-        }
-
-        DB::transaction(
-            function () use (
-                $user,
-                $data
-            ) {
-                DB::table('users')
-                    ->where(
-                        'id',
-                        $user->id
-                    )
-                    ->update([
-                        'password' =>
-                            Hash::make(
-                                $data['password']
-                            ),
-
-                        'password_reset_otp' =>
-                            null,
-
-                        'password_reset_expires_at' =>
-                            null,
-
-                        'updated_at' =>
-                            now(),
-                    ]);
-
-                /*
-                 * Logout all existing sessions.
-                 */
-                DB::table(
-                    'passenger_api_tokens'
-                )
-                    ->where(
-                        'user_id',
-                        $user->id
-                    )
-                    ->delete();
-            }
+        $validation = $this->validateResetOtp(
+            $user,
+            $otp
         );
 
-        /*
-         * Reload user for mail.
-         */
+        if ($validation !== null) {
+            return $validation;
+        }
+
+        DB::transaction(function () use ($user, $data) {
+            DB::table('users')
+                ->where('id', $user->id)
+                ->update([
+                    'password' => Hash::make(
+                        $data['password']
+                    ),
+                    'password_reset_otp' => null,
+                    'password_reset_expires_at' => null,
+                    'updated_at' => now(),
+                ]);
+
+            /*
+             * Logout every existing passenger API session.
+             */
+            DB::table('passenger_api_tokens')
+                ->where('user_id', $user->id)
+                ->delete();
+        });
+
         $updatedUser = DB::table('users')
-            ->where(
-                'id',
-                $user->id
-            )
+            ->where('id', $user->id)
             ->first();
 
         if ($updatedUser) {
             try {
-                $this->mailService
-                    ->passwordChanged(
-                        $updatedUser
-                    );
+                $this->mailService->passwordChanged(
+                    $updatedUser
+                );
             } catch (\Throwable $e) {
                 report($e);
             }
@@ -853,67 +570,144 @@ class PassengerAuthController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' =>
-                'Password reset successfully. Please login using your new password.',
+            'message' => 'Password reset successfully. Please login using your new password.',
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | CURRENT PASSENGER
+    | Current Passenger
     |--------------------------------------------------------------------------
     */
 
     public function me(Request $request)
     {
-        $passenger = $request
-            ->attributes
-            ->get(
-                'passenger'
-            );
+        $passenger = $request->attributes->get(
+            'passenger'
+        );
+
+        abort_unless(
+            $passenger,
+            401,
+            'Passenger authentication required.'
+        );
 
         return response()->json([
             'success' => true,
-            'passenger' =>
-                $passenger,
+
+            'passenger' => [
+                'id' => (int) $passenger->id,
+                'full_name' => $passenger->name,
+                'name' => $passenger->name,
+                'email' => $passenger->email,
+                'phone' => $passenger->phone,
+                'role' => $passenger->role,
+                'status' => $passenger->status,
+                'is_active' => (bool) $passenger->is_active,
+                'email_verified' =>
+                    $passenger->email_verified_at !== null,
+            ],
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | LOGOUT
+    | Logout
     |--------------------------------------------------------------------------
     */
 
     public function logout(Request $request)
     {
-        $tokenHash = $request
-            ->attributes
-            ->get(
-                'passenger_token_hash'
-            );
+        $tokenHash = $request->attributes->get(
+            'passenger_token_hash'
+        );
 
         if ($tokenHash) {
-            DB::table(
-                'passenger_api_tokens'
-            )
-                ->where(
-                    'token_hash',
-                    $tokenHash
-                )
+            DB::table('passenger_api_tokens')
+                ->where('token_hash', $tokenHash)
                 ->delete();
         }
 
         return response()->json([
             'success' => true,
-            'message' =>
-                'Logged out successfully.',
+            'message' => 'Logged out successfully.',
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | FAILED LOGIN SECURITY
+    | Find Passenger by Email
+    |--------------------------------------------------------------------------
+    */
+
+    private function findPassengerByEmail(
+        string $email
+    ): ?object {
+        return DB::table('users')
+            ->where('role', 'PASSENGER')
+            ->whereRaw(
+                'LOWER(email) = ?',
+                [strtolower(trim($email))]
+            )
+            ->first();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Password Reset OTP
+    |--------------------------------------------------------------------------
+    */
+
+    private function validateResetOtp(
+        object $user,
+        string $otp
+    ) {
+        if (
+            empty($user->password_reset_otp) ||
+            !hash_equals(
+                (string) $user->password_reset_otp,
+                $otp
+            )
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid password reset OTP.',
+            ], 422);
+        }
+
+        if (
+            empty($user->password_reset_expires_at) ||
+            now()->greaterThan(
+                $user->password_reset_expires_at
+            )
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Password reset OTP has expired.',
+                'otp_expired' => true,
+            ], 422);
+        }
+
+        return null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Generate OTP
+    |--------------------------------------------------------------------------
+    */
+
+    private function generateOtp(): string
+    {
+        return (string) random_int(
+            100000,
+            999999
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failed Login Security
     |--------------------------------------------------------------------------
     */
 
@@ -942,25 +736,23 @@ class PassengerAuthController extends Controller
         Cache::put(
             $key,
             $attempts,
-            now()->addMinutes(30)
+            now()->addMinutes(
+                self::FAILED_LOGIN_EXPIRY_MINUTES
+            )
         );
 
-        /*
-         * Send alert on the 3rd failed attempt.
-         */
-        if ($attempts === 3) {
+        if ($attempts === self::SECURITY_ALERT_ATTEMPT) {
             $device = (string) (
                 $request->userAgent()
                 ?? 'Unknown'
             );
 
             try {
-                $this->mailService
-                    ->securityAlert(
-                        $user,
-                        $ip,
-                        $device
-                    );
+                $this->mailService->securityAlert(
+                    $user,
+                    $ip,
+                    $device
+                );
             } catch (\Throwable $e) {
                 report($e);
             }
@@ -969,7 +761,7 @@ class PassengerAuthController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | CLEAR FAILED LOGIN COUNTER
+    | Clear Failed Login Counter
     |--------------------------------------------------------------------------
     */
 

@@ -12,239 +12,102 @@ class FixedScheduleController extends Controller
     |--------------------------------------------------------------------------
     | Search Fixed Daily Services
     |--------------------------------------------------------------------------
-    |
-    | Admin-created information-only timetables.
-    |
-    | Example:
-    |
-    | Master Route 76
-    | Akkaraipattu ↔ Trincomalee
-    |
-    | Starting:
-    | Akkaraipattu -> ... -> Trincomalee
-    |
-    | Return:
-    | Trincomalee -> ... -> Akkaraipattu
-    |
-    | Supports intermediate stop search in BOTH directions.
-    |
     */
 
     public function search(Request $request)
     {
         $data = $request->validate([
-            'origin' => [
-                'required',
-                'string',
-                'max:150',
-            ],
-
-            'destination' => [
-                'required',
-                'string',
-                'max:150',
-                'different:origin',
-            ],
+            'origin' => ['required', 'string', 'max:150'],
+            'destination' => ['required', 'string', 'max:150', 'different:origin'],
         ]);
 
-        $origin = trim(
-            $data['origin']
-        );
-
-        $destination = trim(
-            $data['destination']
-        );
+        $origin = trim($data['origin']);
+        $destination = trim($data['destination']);
 
         /*
-        |--------------------------------------------------------------------------
-        | Admin Fixed Timetables Only
-        |--------------------------------------------------------------------------
-        |
-        | Admin timetable:
-        |
-        | operator_id = NULL
-        | bus_id      = NULL
-        |
-        | Operator bookable services are excluded.
-        |
-        */
-
+         * Admin-created timetable-only services:
+         *
+         * operator_id = NULL
+         * bus_id      = NULL
+         *
+         * Operator-created bookable services are excluded.
+         */
         $services = DB::table('fixed_services as fs')
-            ->join(
-                'routes as r',
-                'r.id',
-                '=',
-                'fs.route_id'
-            )
-            ->whereNull(
-                'fs.operator_id'
-            )
-            ->whereNull(
-                'fs.bus_id'
-            )
-            ->where(
-                'fs.is_active',
-                true
-            )
-            ->where(
-                'fs.is_published',
-                true
-            )
-            ->where(
-                'r.is_active',
-                true
-            )
+            ->join('routes as r', 'r.id', '=', 'fs.route_id')
+            ->whereNull('fs.operator_id')
+            ->whereNull('fs.bus_id')
+            ->where('fs.is_active', true)
+            ->where('fs.is_published', true)
+            ->where('r.is_active', true)
             ->select(
                 'fs.id',
                 'fs.route_id',
-
                 'fs.bus_name',
                 'fs.bus_number',
-
                 'fs.contact_number_1',
                 'fs.contact_number_2',
                 'fs.contact_number_3',
-
                 'fs.service_name',
-
                 'fs.starting_time',
                 'fs.return_time',
-
                 'fs.is_active',
                 'fs.is_published',
-
                 'r.route_number',
                 'r.name as route_name',
-
                 'r.origin as route_origin',
                 'r.destination as route_destination',
-
                 'r.distance_km as route_distance_km',
                 'r.duration_minutes as route_duration_minutes'
             )
-            ->orderBy(
-                'fs.bus_name'
-            )
+            ->orderBy('fs.bus_name')
+            ->orderBy('fs.bus_number')
             ->get();
 
         $results = [];
 
-        foreach (
-            $services as $service
-        ) {
-            /*
-            |--------------------------------------------------------------------------
-            | Check Starting Direction
-            |--------------------------------------------------------------------------
-            */
-
-            $startingJourney =
-                $this->findJourney(
+        foreach ($services as $service) {
+            foreach (['starting', 'return'] as $direction) {
+                $journey = $this->findJourney(
                     (int) $service->id,
-                    'starting',
+                    $direction,
                     $origin,
                     $destination
                 );
 
-            if ($startingJourney) {
-                $key =
-                    $service->id
-                    .
-                    '-starting-'
-                    .
-                    $startingJourney['boarding_stop_id']
-                    .
-                    '-'
-                    .
-                    $startingJourney['dropoff_stop_id'];
+                if (!$journey) {
+                    continue;
+                }
 
-                $results[$key] =
-                    $this->buildSearchResult(
-                        $service,
-                        $startingJourney
-                    );
-            }
+                $key = implode('-', [
+                    $service->id,
+                    $direction,
+                    $journey['boarding_stop_id'],
+                    $journey['dropoff_stop_id'],
+                ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Check Return Direction
-            |--------------------------------------------------------------------------
-            */
-
-            $returnJourney =
-                $this->findJourney(
-                    (int) $service->id,
-                    'return',
-                    $origin,
-                    $destination
+                $results[$key] = $this->buildSearchResult(
+                    $service,
+                    $journey
                 );
-
-            if ($returnJourney) {
-                $key =
-                    $service->id
-                    .
-                    '-return-'
-                    .
-                    $returnJourney['boarding_stop_id']
-                    .
-                    '-'
-                    .
-                    $returnJourney['dropoff_stop_id'];
-
-                $results[$key] =
-                    $this->buildSearchResult(
-                        $service,
-                        $returnJourney
-                    );
             }
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Sort by passenger boarding time
-        |--------------------------------------------------------------------------
-        */
-
-        $results =
-            collect(
-                array_values($results)
-            )
-                ->sortBy(
-                    fn ($row) =>
-                        $row['boarding_time']
-                        ??
-                        '23:59:59'
-                )
-                ->values();
+        $results = collect(array_values($results))
+            ->sortBy(fn ($row) => $row['boarding_time'] ?? '23:59:59')
+            ->values();
 
         return response()->json([
             'success' => true,
-
             'search' => [
-                'origin' =>
-                    $origin,
-
-                'destination' =>
-                    $destination,
+                'origin' => $origin,
+                'destination' => $destination,
             ],
+            'count' => $results->count(),
+            'results' => $results,
 
-            'count' =>
-                $results->count(),
-
-            /*
-             * Preferred field.
-             */
-            'results' =>
-                $results,
-
-            /*
-             * Compatibility.
-             */
-            'services' =>
-                $results,
-
-            'schedules' =>
-                $results,
+            // Compatibility with existing Passenger App.
+            'services' => $results,
+            'schedules' => $results,
         ]);
     }
 
@@ -257,59 +120,30 @@ class FixedScheduleController extends Controller
     public function show(int $id)
     {
         $service = DB::table('fixed_services as fs')
-            ->join(
-                'routes as r',
-                'r.id',
-                '=',
-                'fs.route_id'
-            )
-            ->where(
-                'fs.id',
-                $id
-            )
-            ->whereNull(
-                'fs.operator_id'
-            )
-            ->whereNull(
-                'fs.bus_id'
-            )
-            ->where(
-                'fs.is_active',
-                true
-            )
-            ->where(
-                'fs.is_published',
-                true
-            )
-            ->where(
-                'r.is_active',
-                true
-            )
+            ->join('routes as r', 'r.id', '=', 'fs.route_id')
+            ->where('fs.id', $id)
+            ->whereNull('fs.operator_id')
+            ->whereNull('fs.bus_id')
+            ->where('fs.is_active', true)
+            ->where('fs.is_published', true)
+            ->where('r.is_active', true)
             ->select(
                 'fs.id',
                 'fs.route_id',
-
                 'fs.bus_name',
                 'fs.bus_number',
-
                 'fs.contact_number_1',
                 'fs.contact_number_2',
                 'fs.contact_number_3',
-
                 'fs.service_name',
-
                 'fs.starting_time',
                 'fs.return_time',
-
                 'fs.is_active',
                 'fs.is_published',
-
                 'r.route_number',
                 'r.name as route_name',
-
                 'r.origin as route_origin',
                 'r.destination as route_destination',
-
                 'r.distance_km as route_distance_km',
                 'r.duration_minutes as route_duration_minutes'
             )
@@ -318,207 +152,137 @@ class FixedScheduleController extends Controller
         if (!$service) {
             return response()->json([
                 'success' => false,
-
-                'message' =>
-                    'Fixed bus schedule not found.',
+                'message' => 'Fixed bus schedule not found.',
             ], 404);
         }
 
-        $roadWay =
-            $this->masterRoadWay(
-                (int) $service->route_id
-            );
+        $roadWay = $this->masterRoadWay(
+            (int) $service->route_id
+        );
 
-        $startingSchedule =
-            $this->schedule(
-                (int) $service->id,
-                'starting'
-            );
+        $startingSchedule = $this->schedule(
+            (int) $service->id,
+            'starting'
+        );
 
-        $returnSchedule =
-            $this->schedule(
-                (int) $service->id,
-                'return'
-            );
+        $returnSchedule = $this->schedule(
+            (int) $service->id,
+            'return'
+        );
 
         return response()->json([
             'success' => true,
 
             'service' => [
-                'id' =>
-                    $service->id,
+                'id' => (int) $service->id,
+                'fixed_service_id' => (int) $service->id,
 
-                'fixed_service_id' =>
-                    $service->id,
-
-                'type' =>
-                    'fixed_schedule',
-
-                'service_type' =>
-                    'fixed_timetable',
-
-                'label' =>
-                    'Daily Service',
+                'type' => 'fixed_schedule',
+                'service_type' => 'fixed_timetable',
+                'label' => 'Daily Service',
 
                 /*
-                 * Information only.
+                 * Admin timetable is information-only.
                  */
-                'bookable' =>
-                    false,
-
-                'booking_available' =>
-                    false,
-
-                'timetable_only' =>
-                    true,
+                'bookable' => false,
+                'booking_available' => false,
+                'timetable_only' => true,
 
                 /*
                  * Bus information.
                  */
                 'bus_name' =>
                     $service->bus_name
-                    ??
-                    $service->service_name
-                    ??
-                    'Daily Service',
+                    ?: ($service->service_name ?: 'Daily Service'),
 
-                'bus_number' =>
-                    $service->bus_number,
+                'bus_number' => $service->bus_number,
 
                 /*
-                 * Contact.
+                 * Contact numbers.
                  */
-                'contact_number' =>
-                    $service->contact_number_1,
-
-                'contact_numbers' =>
-                    $this->contactNumbers(
-                        $service
-                    ),
+                'contact_number' => $service->contact_number_1,
+                'contact_numbers' => $this->contactNumbers($service),
 
                 /*
-                 * Master Route.
+                 * Master route.
                  */
-                'route_id' =>
-                    $service->route_id,
+                'route_id' => (int) $service->route_id,
+                'route_number' => $service->route_number,
+                'route_name' => $service->route_name,
 
-                'route_number' =>
-                    $service->route_number,
-
-                'route_name' =>
-                    $service->route_name,
-
-                'master_route_origin' =>
-                    $service->route_origin,
-
-                'master_route_destination' =>
-                    $service->route_destination,
+                'master_route_origin' => $service->route_origin,
+                'master_route_destination' => $service->route_destination,
 
                 'master_route_display' =>
-                    $service->route_origin
-                    .
-                    ' ↔ '
-                    .
+                    $service->route_origin .
+                    ' ↔ ' .
                     $service->route_destination,
 
                 /*
-                 * Starting route.
+                 * Starting direction.
                  */
-                'starting_origin' =>
-                    $service->route_origin,
-
-                'starting_destination' =>
-                    $service->route_destination,
+                'starting_origin' => $service->route_origin,
+                'starting_destination' => $service->route_destination,
 
                 'starting_route_display' =>
-                    $service->route_origin
-                    .
-                    ' → '
-                    .
+                    $service->route_origin .
+                    ' → ' .
                     $service->route_destination,
 
                 /*
-                 * Return route.
+                 * Return direction.
                  */
-                'return_origin' =>
-                    $service->route_destination,
-
-                'return_destination' =>
-                    $service->route_origin,
+                'return_origin' => $service->route_destination,
+                'return_destination' => $service->route_origin,
 
                 'return_route_display' =>
-                    $service->route_destination
-                    .
-                    ' → '
-                    .
+                    $service->route_destination .
+                    ' → ' .
                     $service->route_origin,
 
-                'distance_km' =>
-                    $service->route_distance_km,
+                /*
+                 * Route information.
+                 */
+                'distance_km' => $service->route_distance_km !== null
+                    ? (float) $service->route_distance_km
+                    : null,
 
                 'duration_minutes' =>
-                    $service->route_duration_minutes,
+                    $service->route_duration_minutes !== null
+                        ? (int) $service->route_duration_minutes
+                        : null,
 
                 /*
-                 * First timetable times.
+                 * Main timetable times.
                  */
-                'starting_time' =>
-                    $service->starting_time,
-
-                'return_time' =>
-                    $service->return_time,
+                'starting_time' => $service->starting_time,
+                'return_time' => $service->return_time,
 
                 /*
                  * No online fare / booking.
                  */
-                'fare' =>
-                    null,
+                'fare' => null,
 
-                'is_active' =>
-                    (bool)
-                    $service->is_active,
-
-                'is_published' =>
-                    (bool)
-                    $service->is_published,
+                'is_active' => (bool) $service->is_active,
+                'is_published' => (bool) $service->is_published,
 
                 'message' =>
-                    'Online seat booking is not available for this daily service.',
+                    'This is a timetable-only daily service. Online seat booking is not available.',
             ],
 
-            /*
-             * Master Route road-way in forward order.
-             */
-            'road_way' =>
-                $roadWay,
+            'road_way' => $roadWay,
+            'starting_schedule' => $startingSchedule,
+            'return_schedule' => $returnSchedule,
 
-            /*
-             * Actual daily service timetables.
-             */
-            'starting_schedule' =>
-                $startingSchedule,
-
-            'return_schedule' =>
-                $returnSchedule,
-
-            'booking_available' =>
-                false,
+            'booking_available' => false,
+            'timetable_only' => true,
         ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Find Journey In Exact Direction
+    | Find Journey
     |--------------------------------------------------------------------------
-    |
-    | fixed_service_stops.stop_order is journey order.
-    |
-    | starting:
-    | 1,2,3... = forward
-    |
-    | return:
-    | 1,2,3... = reverse journey
-    |
     */
 
     private function findJourney(
@@ -527,159 +291,109 @@ class FixedScheduleController extends Controller
         string $origin,
         string $destination
     ): ?array {
-        $stops =
-            $this->schedule(
-                $serviceId,
-                $direction
-            );
+        $stops = $this->schedule(
+            $serviceId,
+            $direction
+        );
 
-        if (
-            $stops->count()
-            <
-            2
-        ) {
+        if ($stops->count() < 2) {
             return null;
         }
 
-        $boarding =
-            $this->findStop(
-                $stops,
-                $origin
-            );
+        $boarding = $this->findStop(
+            $stops,
+            $origin
+        );
 
-        $dropoff =
-            $this->findStop(
-                $stops,
-                $destination
-            );
+        $dropoff = $this->findStop(
+            $stops,
+            $destination
+        );
 
+        if (!$boarding || !$dropoff) {
+            return null;
+        }
+
+        /*
+         * Passenger must travel forward in the selected
+         * timetable direction.
+         */
         if (
-            !$boarding
-            ||
-            !$dropoff
+            (int) $boarding['journey_order'] >=
+            (int) $dropoff['journey_order']
         ) {
             return null;
         }
 
         /*
-         * Must travel forward in the CURRENT timetable direction.
+         * Respect boarding / drop-off permissions.
          */
-        if (
-            (int)
-            $boarding['journey_order']
-            >=
-            (int)
-            $dropoff['journey_order']
-        ) {
+        if (!$boarding['boarding_allowed']) {
+            return null;
+        }
+
+        if (!$dropoff['dropoff_allowed']) {
             return null;
         }
 
         $boardingTime =
             $boarding['departure_time']
-            ??
-            $boarding['arrival_time'];
+            ?? $boarding['arrival_time'];
 
         $dropoffTime =
             $dropoff['arrival_time']
-            ??
-            $dropoff['departure_time'];
+            ?? $dropoff['departure_time'];
 
         /*
-         * Master Route distance remains measured from
-         * the fixed Master Route origin.
-         *
-         * ABS makes return direction correct.
+         * Master-route distance is measured from the
+         * master route origin. ABS supports return trips.
          */
-        $journeyDistance =
-            abs(
-                (float)
-                $dropoff[
-                    'distance_from_origin_km'
-                ]
-                -
-                (float)
-                $boarding[
-                    'distance_from_origin_km'
-                ]
-            );
+        $journeyDistance = abs(
+            (float) $dropoff['distance_from_origin_km'] -
+            (float) $boarding['distance_from_origin_km']
+        );
 
-        /*
-         * Fare stage difference is returned as useful
-         * journey information.
-         *
-         * This fixed timetable itself has no online fare.
-         */
-        $fareStageDifference =
-            null;
+        $fareStageDifference = null;
 
         if (
-            $boarding['fare_stage_no'] !== null
-            &&
+            $boarding['fare_stage_no'] !== null &&
             $dropoff['fare_stage_no'] !== null
         ) {
-            $fareStageDifference =
-                abs(
-                    (int)
-                    $dropoff['fare_stage_no']
-                    -
-                    (int)
-                    $boarding['fare_stage_no']
-                );
+            $fareStageDifference = abs(
+                (int) $dropoff['fare_stage_no'] -
+                (int) $boarding['fare_stage_no']
+            );
         }
 
         return [
-            'direction' =>
-                $direction,
+            'direction' => $direction,
 
             'boarding_stop_id' =>
-                $boarding[
-                    'fixed_service_stop_id'
-                ],
+                $boarding['fixed_service_stop_id'],
 
             'dropoff_stop_id' =>
-                $dropoff[
-                    'fixed_service_stop_id'
-                ],
+                $dropoff['fixed_service_stop_id'],
 
             'boarding_route_stop_id' =>
-                $boarding[
-                    'route_stop_id'
-                ],
+                $boarding['route_stop_id'],
 
             'dropoff_route_stop_id' =>
-                $dropoff[
-                    'route_stop_id'
-                ],
+                $dropoff['route_stop_id'],
 
-            'boarding_stop' =>
-                $boarding['name'],
-
-            'dropoff_stop' =>
-                $dropoff['name'],
+            'boarding_stop' => $boarding['name'],
+            'dropoff_stop' => $dropoff['name'],
 
             'boarding_stop_order' =>
-                (int)
-                $boarding[
-                    'journey_order'
-                ],
+                (int) $boarding['journey_order'],
 
             'dropoff_stop_order' =>
-                (int)
-                $dropoff[
-                    'journey_order'
-                ],
+                (int) $dropoff['journey_order'],
 
-            'boarding_time' =>
-                $boardingTime,
-
-            'dropoff_time' =>
-                $dropoffTime,
+            'boarding_time' => $boardingTime,
+            'dropoff_time' => $dropoffTime,
 
             'journey_distance_km' =>
-                round(
-                    $journeyDistance,
-                    2
-                ),
+                round($journeyDistance, 2),
 
             'fare_stage_difference' =>
                 $fareStageDifference,
@@ -696,214 +410,120 @@ class FixedScheduleController extends Controller
         $service,
         array $journey
     ): array {
-        $direction =
-            $journey['direction'];
+        $direction = $journey['direction'];
 
-        if (
-            $direction
-            ===
-            'return'
-        ) {
-            $fullOrigin =
-                $service->route_destination;
-
-            $fullDestination =
-                $service->route_origin;
+        if ($direction === 'return') {
+            $fullOrigin = $service->route_destination;
+            $fullDestination = $service->route_origin;
         } else {
-            $fullOrigin =
-                $service->route_origin;
-
-            $fullDestination =
-                $service->route_destination;
+            $fullOrigin = $service->route_origin;
+            $fullDestination = $service->route_destination;
         }
 
         return [
-            'id' =>
-                $service->id,
+            'id' => (int) $service->id,
+            'fixed_service_id' => (int) $service->id,
 
-            'fixed_service_id' =>
-                $service->id,
-
-            'type' =>
-                'fixed_schedule',
-
-            'service_type' =>
-                'fixed_timetable',
-
-            'label' =>
-                'Daily Service',
-
-            'timetable_only' =>
-                true,
+            'type' => 'fixed_schedule',
+            'service_type' => 'fixed_timetable',
+            'label' => 'Daily Service',
 
             /*
              * Never bookable.
              */
-            'bookable' =>
-                false,
-
-            'booking_available' =>
-                false,
+            'timetable_only' => true,
+            'bookable' => false,
+            'booking_available' => false,
 
             /*
-             * Bus.
+             * Bus information.
              */
             'bus_name' =>
                 $service->bus_name
-                ??
-                $service->service_name
-                ??
-                'Daily Service',
+                ?: ($service->service_name ?: 'Daily Service'),
 
-            'bus_number' =>
-                $service->bus_number,
+            'bus_number' => $service->bus_number,
 
             /*
              * Contact.
              */
-            'contact_number' =>
-                $service->contact_number_1,
-
-            'contact_numbers' =>
-                $this->contactNumbers(
-                    $service
-                ),
+            'contact_number' => $service->contact_number_1,
+            'contact_numbers' => $this->contactNumbers($service),
 
             /*
-             * Master Route.
+             * Master route.
              */
-            'route_id' =>
-                $service->route_id,
+            'route_id' => (int) $service->route_id,
+            'route_number' => $service->route_number,
+            'route_name' => $service->route_name,
 
-            'route_number' =>
-                $service->route_number,
-
-            'route_name' =>
-                $service->route_name,
-
-            'master_route_origin' =>
-                $service->route_origin,
-
-            'master_route_destination' =>
-                $service->route_destination,
+            'master_route_origin' => $service->route_origin,
+            'master_route_destination' => $service->route_destination,
 
             'master_route_display' =>
-                $service->route_origin
-                .
-                ' ↔ '
-                .
+                $service->route_origin .
+                ' ↔ ' .
                 $service->route_destination,
 
             /*
-             * Actual service direction.
+             * Full service direction.
              */
-            'direction' =>
-                $direction,
+            'direction' => $direction,
 
-            'full_route_origin' =>
-                $fullOrigin,
-
-            'full_route_destination' =>
-                $fullDestination,
+            'full_route_origin' => $fullOrigin,
+            'full_route_destination' => $fullDestination,
 
             'full_route_display' =>
-                $fullOrigin
-                .
-                ' → '
-                .
+                $fullOrigin .
+                ' → ' .
                 $fullDestination,
 
             /*
-             * Passenger requested segment.
+             * Passenger requested journey.
              */
-            'origin' =>
-                $journey[
-                    'boarding_stop'
-                ],
+            'origin' => $journey['boarding_stop'],
+            'destination' => $journey['dropoff_stop'],
 
-            'destination' =>
-                $journey[
-                    'dropoff_stop'
-                ],
+            'requested_origin' => $journey['boarding_stop'],
+            'requested_destination' => $journey['dropoff_stop'],
 
-            'requested_origin' =>
-                $journey[
-                    'boarding_stop'
-                ],
-
-            'requested_destination' =>
-                $journey[
-                    'dropoff_stop'
-                ],
-
-            'boarding_stop' =>
-                $journey[
-                    'boarding_stop'
-                ],
-
-            'dropoff_stop' =>
-                $journey[
-                    'dropoff_stop'
-                ],
+            'boarding_stop' => $journey['boarding_stop'],
+            'dropoff_stop' => $journey['dropoff_stop'],
 
             'boarding_stop_order' =>
-                $journey[
-                    'boarding_stop_order'
-                ],
+                $journey['boarding_stop_order'],
 
             'dropoff_stop_order' =>
-                $journey[
-                    'dropoff_stop_order'
-                ],
+                $journey['dropoff_stop_order'],
 
             /*
-             * Timetable.
+             * Passenger timetable.
              */
-            'boarding_time' =>
-                $journey[
-                    'boarding_time'
-                ],
-
-            'dropoff_time' =>
-                $journey[
-                    'dropoff_time'
-                ],
+            'boarding_time' => $journey['boarding_time'],
+            'dropoff_time' => $journey['dropoff_time'],
 
             /*
              * Compatibility names.
              */
-            'departure_time' =>
-                $journey[
-                    'boarding_time'
-                ],
-
-            'arrival_time' =>
-                $journey[
-                    'dropoff_time'
-                ],
+            'departure_time' => $journey['boarding_time'],
+            'arrival_time' => $journey['dropoff_time'],
 
             /*
-             * Journey data.
+             * Journey information.
              */
             'journey_distance_km' =>
-                $journey[
-                    'journey_distance_km'
-                ],
+                $journey['journey_distance_km'],
 
             'fare_stage_difference' =>
-                $journey[
-                    'fare_stage_difference'
-                ],
+                $journey['fare_stage_difference'],
 
             /*
-             * Admin Daily Service:
-             * informational timetable only.
+             * Information-only timetable.
              */
-            'fare' =>
-                null,
+            'fare' => null,
 
             'message' =>
-                'Online seat booking is not available for this daily service.',
+                'This is a timetable-only daily service. Online seat booking is not available.',
         ];
     }
 
@@ -911,221 +531,171 @@ class FixedScheduleController extends Controller
     |--------------------------------------------------------------------------
     | Fixed Service Schedule
     |--------------------------------------------------------------------------
-    |
-    | IMPORTANT:
-    |
-    | Stop name comes from route_stops.
-    |
-    | We do NOT depend on legacy:
-    |
-    | fixed_service_stops.stop_name
-    |
     */
 
     private function schedule(
         int $serviceId,
         string $direction
     ) {
-        return DB::table(
-            'fixed_service_stops as fss'
-        )
-            ->join(
+        return DB::table('fixed_service_stops as fss')
+            ->leftJoin(
                 'route_stops as rs',
                 'rs.id',
                 '=',
                 'fss.route_stop_id'
             )
-            ->where(
-                'fss.fixed_service_id',
-                $serviceId
-            )
-            ->where(
-                'fss.direction',
-                $direction
-            )
-            ->orderBy(
-                'fss.stop_order'
-            )
+            ->where('fss.fixed_service_id', $serviceId)
+            ->where('fss.direction', $direction)
+            ->orderBy('fss.stop_order')
             ->select(
                 'fss.id as fixed_service_stop_id',
-
                 'fss.fixed_service_id',
-
                 'fss.route_stop_id',
-
                 'fss.direction',
-
+                'fss.stop_name as legacy_stop_name',
                 'fss.stop_order as journey_order',
-
                 'fss.arrival_time',
-
                 'fss.departure_time',
-
-                'rs.name',
-
+                'fss.boarding_allowed',
+                'fss.dropoff_allowed',
+                'rs.name as route_stop_name',
                 'rs.stop_order as master_stop_order',
-
                 'rs.fare_stage_no',
-
-                'rs.distance_from_origin_km'
+                'rs.distance_from_origin_km',
+                'rs.distance_from_origin'
             )
             ->get()
-            ->map(
-                function ($stop) {
-                    return [
-                        'fixed_service_stop_id' =>
-                            (int)
-                            $stop
-                                ->fixed_service_stop_id,
+            ->map(function ($stop) {
+                $name = trim(
+                    (string) (
+                        $stop->route_stop_name
+                        ?: $stop->legacy_stop_name
+                    )
+                );
 
-                        'fixed_service_id' =>
-                            (int)
-                            $stop
-                                ->fixed_service_id,
+                $distance = $stop->distance_from_origin_km;
 
-                        'route_stop_id' =>
-                            (int)
-                            $stop
-                                ->route_stop_id,
-
-                        'direction' =>
-                            $stop
-                                ->direction,
-
-                        /*
-                         * Journey order in current timetable.
-                         */
-                        'journey_order' =>
-                            (int)
-                            $stop
-                                ->journey_order,
-
-                        /*
-                         * Master Route order.
-                         */
-                        'master_stop_order' =>
-                            (int)
-                            $stop
-                                ->master_stop_order,
-
-                        'name' =>
-                            $stop->name,
-
-                        /*
-                         * Compatibility.
-                         */
-                        'stop_name' =>
-                            $stop->name,
-
-                        'arrival_time' =>
-                            $stop
-                                ->arrival_time,
-
-                        'departure_time' =>
-                            $stop
-                                ->departure_time,
-
-                        'schedule_time' =>
-                            $stop
-                                ->departure_time
-                            ??
-                            $stop
-                                ->arrival_time,
-
-                        'fare_stage_no' =>
-                            $stop->fare_stage_no
-                            !==
-                            null
-                                ? (int)
-                                $stop
-                                    ->fare_stage_no
-                                : null,
-
-                        'distance_from_origin_km' =>
-                            (float)
-                            (
-                                $stop
-                                    ->distance_from_origin_km
-                                ??
-                                0
-                            ),
-                    ];
+                if ($distance === null) {
+                    $distance = $stop->distance_from_origin;
                 }
+
+                return [
+                    'fixed_service_stop_id' =>
+                        (int) $stop->fixed_service_stop_id,
+
+                    'fixed_service_id' =>
+                        (int) $stop->fixed_service_id,
+
+                    'route_stop_id' =>
+                        $stop->route_stop_id !== null
+                            ? (int) $stop->route_stop_id
+                            : null,
+
+                    'direction' => $stop->direction,
+
+                    /*
+                     * Journey order for this timetable direction.
+                     */
+                    'journey_order' =>
+                        (int) $stop->journey_order,
+
+                    /*
+                     * Master route order may be unavailable
+                     * for old timetable records.
+                     */
+                    'master_stop_order' =>
+                        $stop->master_stop_order !== null
+                            ? (int) $stop->master_stop_order
+                            : null,
+
+                    'name' => $name,
+                    'stop_name' => $name,
+
+                    'arrival_time' => $stop->arrival_time,
+                    'departure_time' => $stop->departure_time,
+
+                    'schedule_time' =>
+                        $stop->departure_time
+                        ?? $stop->arrival_time,
+
+                    'boarding_allowed' =>
+                        (bool) $stop->boarding_allowed,
+
+                    'dropoff_allowed' =>
+                        (bool) $stop->dropoff_allowed,
+
+                    'fare_stage_no' =>
+                        $stop->fare_stage_no !== null
+                            ? (int) $stop->fare_stage_no
+                            : null,
+
+                    'distance_from_origin_km' =>
+                        $distance !== null
+                            ? (float) $distance
+                            : 0.0,
+                ];
+            })
+            ->filter(
+                fn ($stop) =>
+                    trim((string) $stop['name']) !== ''
             )
             ->values();
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Master Road Way
+    | Master Route Road-Way
     |--------------------------------------------------------------------------
     */
 
-    private function masterRoadWay(
-        int $routeId
-    ) {
-        return DB::table(
-            'route_stops'
-        )
-            ->where(
-                'route_id',
-                $routeId
-            )
-            ->orderBy(
-                'stop_order'
-            )
+    private function masterRoadWay(int $routeId)
+    {
+        return DB::table('route_stops')
+            ->where('route_id', $routeId)
+            ->orderBy('stop_order')
             ->get()
-            ->map(
-                function ($stop) {
-                    return [
-                        'id' =>
-                            (int)
-                            $stop->id,
+            ->map(function ($stop) {
+                $distance =
+                    $stop->distance_from_origin_km
+                    ?? $stop->distance_from_origin
+                    ?? 0;
 
-                        'route_stop_id' =>
-                            (int)
-                            $stop->id,
+                return [
+                    'id' => (int) $stop->id,
+                    'route_stop_id' => (int) $stop->id,
+                    'name' => $stop->name,
+                    'stop_name' => $stop->name,
+                    'stop_order' => (int) $stop->stop_order,
 
-                        'name' =>
-                            $stop->name,
+                    'fare_stage_no' =>
+                        $stop->fare_stage_no !== null
+                            ? (int) $stop->fare_stage_no
+                            : null,
 
-                        'stop_order' =>
-                            (int)
-                            $stop->stop_order,
+                    'distance_from_origin_km' =>
+                        (float) $distance,
 
-                        'fare_stage_no' =>
-                            $stop->fare_stage_no
-                            !==
-                            null
-                                ? (int)
-                                $stop
-                                    ->fare_stage_no
-                                : null,
+                    'latitude' =>
+                        $stop->latitude !== null
+                            ? (float) $stop->latitude
+                            : null,
 
-                        'distance_from_origin_km' =>
-                            (float)
-                            (
-                                $stop
-                                    ->distance_from_origin_km
-                                ??
-                                $stop
-                                    ->distance_from_origin
-                                ??
-                                0
-                            ),
+                    'longitude' =>
+                        $stop->longitude !== null
+                            ? (float) $stop->longitude
+                            : null,
 
-                        'latitude' =>
-                            $stop->latitude
-                            ??
-                            null,
+                    'boarding_allowed' =>
+                        isset($stop->boarding_allowed)
+                            ? (bool) $stop->boarding_allowed
+                            : true,
 
-                        'longitude' =>
-                            $stop->longitude
-                            ??
-                            null,
-                    ];
-                }
-            )
+                    'dropoff_allowed' =>
+                        isset($stop->dropoff_allowed)
+                            ? (bool) $stop->dropoff_allowed
+                            : true,
+                ];
+            })
             ->values();
     }
 
@@ -1140,41 +710,23 @@ class FixedScheduleController extends Controller
         string $search
     ): ?array {
         /*
-         * 1. Exact normalized match.
+         * First try exact normalized match.
          */
-        foreach (
-            $stops as $stop
-        ) {
-            if (
-                $this->same(
-                    $stop['name'],
-                    $search
-                )
-            ) {
+        foreach ($stops as $stop) {
+            if ($this->same($stop['name'], $search)) {
                 return $stop;
             }
         }
 
         /*
-         * 2. Safe partial match.
+         * Then safe partial match.
          *
          * Example:
-         *
-         * Search:
          * Batticaloa
-         *
-         * Schedule:
          * Batticaloa Bus Stand
          */
-        foreach (
-            $stops as $stop
-        ) {
-            if (
-                $this->similar(
-                    $stop['name'],
-                    $search
-                )
-            ) {
+        foreach ($stops as $stop) {
+            if ($this->similar($stop['name'], $search)) {
                 return $stop;
             }
         }
@@ -1192,19 +744,13 @@ class FixedScheduleController extends Controller
         string $first,
         string $second
     ): bool {
-        return
-            $this->normalize(
-                $first
-            )
-            ===
-            $this->normalize(
-                $second
-            );
+        return $this->normalize($first) ===
+            $this->normalize($second);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Partial Match
+    | Safe Partial Match
     |--------------------------------------------------------------------------
     */
 
@@ -1212,74 +758,46 @@ class FixedScheduleController extends Controller
         string $first,
         string $second
     ): bool {
-        $a =
-            $this->normalize(
-                $first
-            );
+        $a = $this->normalize($first);
+        $b = $this->normalize($second);
 
-        $b =
-            $this->normalize(
-                $second
-            );
-
-        if (
-            $a === ''
-            ||
-            $b === ''
-        ) {
+        if ($a === '' || $b === '') {
             return false;
         }
 
         /*
-         * Avoid unsafe tiny searches.
+         * Prevent unsafe very short partial matches.
          */
         if (
-            mb_strlen($a) < 4
-            ||
+            mb_strlen($a) < 4 ||
             mb_strlen($b) < 4
         ) {
             return false;
         }
 
-        return
-            str_contains(
-                $a,
-                $b
-            )
-            ||
-            str_contains(
-                $b,
-                $a
-            );
+        return str_contains($a, $b) ||
+            str_contains($b, $a);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Normalize Location
+    | Normalize Location Name
     |--------------------------------------------------------------------------
     */
 
-    private function normalize(
-        string $value
-    ): string {
-        $value =
-            trim(
-                mb_strtolower(
-                    $value
-                )
-            );
+    private function normalize(string $value): string
+    {
+        $value = trim(
+            mb_strtolower($value)
+        );
 
-        $value =
-            preg_replace(
-                '/[^\p{L}\p{N}]+/u',
-                '',
-                $value
-            );
-
-        return
+        $value = preg_replace(
+            '/[^\p{L}\p{N}]+/u',
+            '',
             $value
-            ??
-            '';
+        );
+
+        return $value ?? '';
     }
 
     /*
@@ -1288,35 +806,15 @@ class FixedScheduleController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function contactNumbers(
-        $service
-    ): array {
+    private function contactNumbers($service): array
+    {
         return collect([
-            $service->contact_number_1
-            ?? null,
-
-            $service->contact_number_2
-            ?? null,
-
-            $service->contact_number_3
-            ?? null,
+            $service->contact_number_1 ?? null,
+            $service->contact_number_2 ?? null,
+            $service->contact_number_3 ?? null,
         ])
-            ->filter(
-                fn ($number) =>
-                    !empty(
-                        trim(
-                            (string)
-                            $number
-                        )
-                    )
-            )
-            ->map(
-                fn ($number) =>
-                    trim(
-                        (string)
-                        $number
-                    )
-            )
+            ->map(fn ($number) => trim((string) $number))
+            ->filter(fn ($number) => $number !== '')
             ->unique()
             ->values()
             ->all();

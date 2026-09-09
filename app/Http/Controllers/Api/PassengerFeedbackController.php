@@ -30,79 +30,20 @@ class PassengerFeedbackController extends Controller
         }
 
         $bookings = DB::table('bookings as b')
-            ->join(
-                'trips as t',
-                't.id',
-                '=',
-                'b.trip_id'
-            )
-            ->join(
-                'buses as bus',
-                'bus.id',
-                '=',
-                't.bus_id'
-            )
-            ->join(
-                'routes as r',
-                'r.id',
-                '=',
-                't.route_id'
-            )
-            ->leftJoin(
-                'operators as o',
-                'o.id',
-                '=',
-                't.operator_id'
-            )
-            ->leftJoin(
-                'trip_feedback as f',
-                function ($join) use ($passenger) {
-                    $join
-                        ->on(
-                            'f.booking_id',
-                            '=',
-                            'b.id'
-                        )
-                        ->where(
-                            'f.passenger_id',
-                            '=',
-                            $passenger->id
-                        );
-                }
-            )
-
-            /*
-             * Booking must belong to logged-in passenger.
-             */
-            ->where(
-                'b.passenger_user_id',
-                $passenger->id
-            )
-
-            /*
-             * Payment must be completed.
-             */
-            ->where(
-                'b.payment_status',
-                'paid'
-            )
-
-            /*
-             * Trip must be completed.
-             */
-            ->where(
-                't.status',
-                'completed'
-            )
-
-            /*
-             * Feedback must not already exist.
-             */
-            ->whereNull(
-                'f.id'
-            )
-
-            ->select([
+            ->join('trips as t', 't.id', '=', 'b.trip_id')
+            ->join('buses as bus', 'bus.id', '=', 't.bus_id')
+            ->join('routes as r', 'r.id', '=', 't.route_id')
+            ->leftJoin('operators as o', 'o.id', '=', 't.operator_id')
+            ->leftJoin('trip_feedback as f', function ($join) use ($passenger) {
+                $join->on('f.booking_id', '=', 'b.id')
+                    ->where('f.passenger_id', '=', $passenger->id);
+            })
+            ->where('b.passenger_user_id', $passenger->id)
+            ->where('b.payment_status', 'paid')
+            ->whereIn('b.status', ['confirmed', 'completed'])
+            ->where('t.status', 'completed')
+            ->whereNull('f.id')
+            ->select(
                 'b.id as booking_id',
                 'b.booking_reference',
                 'b.status as booking_status',
@@ -127,70 +68,79 @@ class PassengerFeedbackController extends Controller
                 'o.company_name',
 
                 'r.id as route_id',
+                'r.route_number',
                 'r.origin',
-                'r.destination',
-            ])
-
-            ->orderByDesc(
-                't.service_date'
+                'r.destination'
             )
-            ->orderByDesc(
-                't.departure_time'
-            )
+            ->orderByDesc('t.service_date')
+            ->orderByDesc('t.departure_time')
             ->get()
-
             ->map(function ($booking) {
+                $routeOrigin = $booking->origin;
+                $routeDestination = $booking->destination;
 
-                /*
-                 * Reverse route direction for return trips.
-                 */
                 if (
                     strtolower(
-                        (string) $booking->trip_type
+                        trim((string) $booking->trip_type)
                     ) === 'return'
                 ) {
-                    $originalOrigin =
-                        $booking->origin;
-
-                    $booking->origin =
-                        $booking->destination;
-
-                    $booking->destination =
-                        $originalOrigin;
+                    $routeOrigin = $booking->destination;
+                    $routeDestination = $booking->origin;
                 }
 
-                /*
-                 * Use actual boarding/drop-off stops when available.
-                 */
-                $booking->display_origin =
-                    $booking->boarding_stop
-                    ?: $booking->origin;
+                return [
+                    'booking_id' => (int) $booking->booking_id,
+                    'booking_reference' => $booking->booking_reference,
+                    'booking_status' => $booking->booking_status,
+                    'payment_status' => $booking->payment_status,
 
-                $booking->display_destination =
-                    $booking->dropoff_stop
-                    ?: $booking->destination;
+                    'trip_id' => (int) $booking->trip_id,
+                    'trip_code' => $booking->trip_code,
+                    'trip_type' => $booking->trip_type,
+                    'trip_status' => $booking->trip_status,
+                    'service_date' => $booking->service_date,
+                    'departure_time' => $booking->departure_time,
+                    'arrival_time' => $booking->arrival_time,
 
-                $booking->feedback_available =
-                    true;
+                    'bus_id' => (int) $booking->bus_id,
+                    'bus_name' => $booking->bus_name,
+                    'bus_number' => $booking->bus_number,
+                    'bus_type' => $booking->bus_type,
 
-                $booking->feedback_submitted =
-                    false;
+                    'operator_id' => $booking->operator_id !== null
+                        ? (int) $booking->operator_id
+                        : null,
 
-                return $booking;
+                    'company_name' => $booking->company_name,
+
+                    'route_id' => (int) $booking->route_id,
+                    'route_number' => $booking->route_number,
+
+                    'route_origin' => $routeOrigin,
+                    'route_destination' => $routeDestination,
+
+                    'boarding_stop' => $booking->boarding_stop,
+                    'dropoff_stop' => $booking->dropoff_stop,
+
+                    'display_origin' =>
+                        $booking->boarding_stop
+                        ?: $routeOrigin,
+
+                    'display_destination' =>
+                        $booking->dropoff_stop
+                        ?: $routeDestination,
+
+                    'feedback_available' => true,
+                    'feedback_submitted' => false,
+                ];
             })
             ->values();
 
         return response()->json([
             'success' => true,
-
-            'feedback_required' =>
-                $bookings->isNotEmpty(),
-
-            'count' =>
-                $bookings->count(),
-
-            'bookings' =>
-                $bookings,
+            'feedback_required' => $bookings->isNotEmpty(),
+            'count' => $bookings->count(),
+            'bookings' => $bookings,
         ]);
     }
 
@@ -203,6 +153,13 @@ class PassengerFeedbackController extends Controller
     public function store(Request $request)
     {
         $passenger = $this->passenger($request);
+
+        if (!Schema::hasTable('trip_feedback')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Feedback storage is not available.',
+            ], 500);
+        }
 
         $data = $request->validate([
             'booking_id' => [
@@ -259,48 +216,12 @@ class PassengerFeedbackController extends Controller
             ],
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Feedback Table Check
-        |--------------------------------------------------------------------------
-        */
-
-        if (!Schema::hasTable('trip_feedback')) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Feedback storage is not available.',
-            ], 500);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find Booking
-        |--------------------------------------------------------------------------
-        */
-
         $booking = DB::table('bookings as b')
-            ->join(
-                'trips as t',
-                't.id',
-                '=',
-                'b.trip_id'
-            )
-            ->join(
-                'buses as bus',
-                'bus.id',
-                '=',
-                't.bus_id'
-            )
-            ->where(
-                'b.id',
-                $data['booking_id']
-            )
-            ->where(
-                'b.passenger_user_id',
-                $passenger->id
-            )
-            ->select([
+            ->join('trips as t', 't.id', '=', 'b.trip_id')
+            ->join('buses as bus', 'bus.id', '=', 't.bus_id')
+            ->where('b.id', $data['booking_id'])
+            ->where('b.passenger_user_id', $passenger->id)
+            ->select(
                 'b.id as booking_id',
                 'b.booking_reference',
                 'b.status as booking_status',
@@ -312,29 +233,16 @@ class PassengerFeedbackController extends Controller
 
                 'bus.id as bus_id',
                 'bus.bus_name',
-                'bus.bus_number',
-            ])
+                'bus.bus_number'
+            )
             ->first();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Booking Ownership
-        |--------------------------------------------------------------------------
-        */
 
         if (!$booking) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Booking not found.',
+                'message' => 'Booking not found.',
             ], 404);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Must Be Paid
-        |--------------------------------------------------------------------------
-        */
 
         if (
             strtolower(
@@ -347,11 +255,18 @@ class PassengerFeedbackController extends Controller
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Trip Must Be Completed
-        |--------------------------------------------------------------------------
-        */
+        if (
+            !in_array(
+                strtolower((string) $booking->booking_status),
+                ['confirmed', 'completed'],
+                true
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'booking_id' =>
+                    'This booking is not eligible for feedback.',
+            ]);
+        }
 
         if (
             strtolower(
@@ -364,23 +279,10 @@ class PassengerFeedbackController extends Controller
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Duplicate Feedback
-        |--------------------------------------------------------------------------
-        */
-
-        $alreadyExists =
-            DB::table('trip_feedback')
-                ->where(
-                    'passenger_id',
-                    $passenger->id
-                )
-                ->where(
-                    'booking_id',
-                    $booking->booking_id
-                )
-                ->exists();
+        $alreadyExists = DB::table('trip_feedback')
+            ->where('passenger_id', $passenger->id)
+            ->where('booking_id', $booking->booking_id)
+            ->exists();
 
         if ($alreadyExists) {
             throw ValidationException::withMessages([
@@ -389,30 +291,29 @@ class PassengerFeedbackController extends Controller
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Save Feedback
-        |--------------------------------------------------------------------------
-        */
-
         $feedbackId = DB::transaction(
             function () use (
                 $passenger,
                 $booking,
                 $data
             ) {
-                $duplicate =
-                    DB::table('trip_feedback')
-                        ->where(
-                            'passenger_id',
-                            $passenger->id
-                        )
-                        ->where(
-                            'booking_id',
-                            $booking->booking_id
-                        )
-                        ->lockForUpdate()
-                        ->exists();
+                $bookingStillValid = DB::table('bookings')
+                    ->where('id', $booking->booking_id)
+                    ->where('passenger_user_id', $passenger->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$bookingStillValid) {
+                    throw ValidationException::withMessages([
+                        'booking_id' =>
+                            'Booking is no longer available.',
+                    ]);
+                }
+
+                $duplicate = DB::table('trip_feedback')
+                    ->where('passenger_id', $passenger->id)
+                    ->where('booking_id', $booking->booking_id)
+                    ->exists();
 
                 if ($duplicate) {
                     throw ValidationException::withMessages([
@@ -421,297 +322,182 @@ class PassengerFeedbackController extends Controller
                     ]);
                 }
 
-                return DB::table(
-                    'trip_feedback'
-                )->insertGetId([
-                    'passenger_id' =>
-                        $passenger->id,
-
-                    'booking_id' =>
-                        $booking->booking_id,
-
-                    'trip_id' =>
-                        $booking->trip_id,
-
-                    'bus_id' =>
-                        $booking->bus_id,
-
-                    'operator_id' =>
-                        $booking->operator_id,
+                return DB::table('trip_feedback')->insertGetId([
+                    'passenger_id' => $passenger->id,
+                    'booking_id' => $booking->booking_id,
+                    'trip_id' => $booking->trip_id,
+                    'bus_id' => $booking->bus_id,
+                    'operator_id' => $booking->operator_id,
 
                     'overall_rating' =>
                         $data['overall_rating'],
 
                     'punctuality_rating' =>
-                        $data[
-                            'punctuality_rating'
-                        ] ?? null,
+                        $data['punctuality_rating'] ?? null,
 
                     'cleanliness_rating' =>
-                        $data[
-                            'cleanliness_rating'
-                        ] ?? null,
+                        $data['cleanliness_rating'] ?? null,
 
                     'staff_rating' =>
-                        $data[
-                            'staff_rating'
-                        ] ?? null,
+                        $data['staff_rating'] ?? null,
 
                     'comfort_rating' =>
-                        $data[
-                            'comfort_rating'
-                        ] ?? null,
+                        $data['comfort_rating'] ?? null,
 
                     'safety_rating' =>
-                        $data[
-                            'safety_rating'
-                        ] ?? null,
+                        $data['safety_rating'] ?? null,
 
                     'travel_again' =>
-                        $data[
-                            'travel_again'
-                        ] ?? null,
-
-                    'comment' =>
-                        isset(
-                            $data['comment']
-                        ) &&
-                        trim(
-                            $data['comment']
-                        ) !== ''
-                            ? trim(
-                                $data['comment']
-                            )
+                        array_key_exists('travel_again', $data)
+                            ? (bool) $data['travel_again']
                             : null,
 
-                    'created_at' =>
-                        now(),
+                    'comment' =>
+                        !empty(trim((string) ($data['comment'] ?? '')))
+                            ? trim((string) $data['comment'])
+                            : null,
 
-                    'updated_at' =>
-                        now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
                 ]);
             },
             3
         );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate Updated Bus Feedback Summary
-        |--------------------------------------------------------------------------
-        */
-
-        $summary =
-            DB::table('trip_feedback')
-                ->where(
-                    'bus_id',
-                    $booking->bus_id
-                )
-                ->selectRaw(
-                    '
-                    COUNT(*) as review_count,
-
-                    AVG(overall_rating)
-                        as overall_rating,
-
-                    AVG(punctuality_rating)
-                        as punctuality_rating,
-
-                    AVG(cleanliness_rating)
-                        as cleanliness_rating,
-
-                    AVG(staff_rating)
-                        as staff_rating,
-
-                    AVG(comfort_rating)
-                        as comfort_rating,
-
-                    AVG(safety_rating)
-                        as safety_rating,
-
-                    AVG(
-                        CASE
-                            WHEN travel_again = 1 THEN 1
-                            WHEN travel_again = 0 THEN 0
-                            ELSE NULL
-                        END
-                    ) as travel_again_ratio
-                    '
-                )
-                ->first();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Rating Values
-        |--------------------------------------------------------------------------
-        */
-
-        $overall =
-            (float) (
-                $summary->overall_rating ?? 0
-            );
-
-        $punctuality =
-            (float) (
-                $summary->punctuality_rating ?? 0
-            );
-
-        $cleanliness =
-            (float) (
-                $summary->cleanliness_rating ?? 0
-            );
-
-        $staffRating =
-            (float) (
-                $summary->staff_rating ?? 0
-            );
-
-        $comfort =
-            (float) (
-                $summary->comfort_rating ?? 0
-            );
-
-        $safety =
-            (float) (
-                $summary->safety_rating ?? 0
-            );
-
-        $travelAgainRatio =
-            (float) (
-                $summary->travel_again_ratio ?? 0
-            );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Bus Quality Score
-        |--------------------------------------------------------------------------
-        |
-        | Overall       30%
-        | Punctuality   15%
-        | Cleanliness   10%
-        | Staff         10%
-        | Comfort       15%
-        | Safety        15%
-        | Travel Again   5%
-        |
-        */
-
-        $overallScore =
-            ($overall / 5) * 100;
-
-        $punctualityScore =
-            ($punctuality / 5) * 100;
-
-        $cleanlinessScore =
-            ($cleanliness / 5) * 100;
-
-        $staffScore =
-            ($staffRating / 5) * 100;
-
-        $comfortScore =
-            ($comfort / 5) * 100;
-
-        $safetyScore =
-            ($safety / 5) * 100;
-
-        $travelAgainScore =
-            $travelAgainRatio * 100;
-
-        $qualityScore =
-            ($overallScore * 0.30)
-            +
-            ($punctualityScore * 0.15)
-            +
-            ($cleanlinessScore * 0.10)
-            +
-            ($staffScore * 0.10)
-            +
-            ($comfortScore * 0.15)
-            +
-            ($safetyScore * 0.15)
-            +
-            ($travelAgainScore * 0.05);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Response
-        |--------------------------------------------------------------------------
-        */
+        $summary = $this->busFeedbackSummary(
+            (int) $booking->bus_id
+        );
 
         return response()->json([
             'success' => true,
-
-            'message' =>
-                'Thank you for your feedback.',
-
-            'feedback_id' =>
-                $feedbackId,
-
-            'feedback_submitted' =>
-                true,
+            'message' => 'Thank you for your feedback.',
+            'feedback_id' => (int) $feedbackId,
+            'feedback_submitted' => true,
 
             'bus_rating' => [
-                'bus_id' =>
-                    (int) $booking->bus_id,
-
-                'bus_name' =>
-                    $booking->bus_name,
-
-                'bus_number' =>
-                    $booking->bus_number,
+                'bus_id' => (int) $booking->bus_id,
+                'bus_name' => $booking->bus_name,
+                'bus_number' => $booking->bus_number,
 
                 'overall_rating' =>
-                    round(
-                        $overall,
-                        1
-                    ),
+                    round($summary['overall'], 1),
 
                 'punctuality_rating' =>
-                    round(
-                        $punctuality,
-                        1
-                    ),
+                    round($summary['punctuality'], 1),
 
                 'cleanliness_rating' =>
-                    round(
-                        $cleanliness,
-                        1
-                    ),
+                    round($summary['cleanliness'], 1),
 
                 'staff_rating' =>
-                    round(
-                        $staffRating,
-                        1
-                    ),
+                    round($summary['staff'], 1),
 
                 'comfort_rating' =>
-                    round(
-                        $comfort,
-                        1
-                    ),
+                    round($summary['comfort'], 1),
 
                 'safety_rating' =>
-                    round(
-                        $safety,
-                        1
-                    ),
+                    round($summary['safety'], 1),
 
                 'travel_again_percentage' =>
                     round(
-                        $travelAgainRatio * 100
+                        $summary['travel_again_ratio'] * 100
                     ),
 
                 'review_count' =>
-                    (int) (
-                        $summary->review_count ?? 0
-                    ),
+                    $summary['review_count'],
 
                 'quality_score' =>
-                    round(
-                        $qualityScore,
-                        2
-                    ),
+                    round($summary['quality_score'], 2),
             ],
         ], 201);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bus Feedback Summary
+    |--------------------------------------------------------------------------
+    */
+
+    private function busFeedbackSummary(int $busId): array
+    {
+        $summary = DB::table('trip_feedback')
+            ->where('bus_id', $busId)
+            ->selectRaw('
+                COUNT(*) as review_count,
+                AVG(overall_rating) as overall_rating,
+                AVG(punctuality_rating) as punctuality_rating,
+                AVG(cleanliness_rating) as cleanliness_rating,
+                AVG(staff_rating) as staff_rating,
+                AVG(comfort_rating) as comfort_rating,
+                AVG(safety_rating) as safety_rating,
+                AVG(
+                    CASE
+                        WHEN travel_again = 1 THEN 1
+                        WHEN travel_again = 0 THEN 0
+                        ELSE NULL
+                    END
+                ) as travel_again_ratio
+            ')
+            ->first();
+
+        $overall =
+            (float) ($summary->overall_rating ?? 0);
+
+        $punctuality =
+            (float) ($summary->punctuality_rating ?? 0);
+
+        $cleanliness =
+            (float) ($summary->cleanliness_rating ?? 0);
+
+        $staff =
+            (float) ($summary->staff_rating ?? 0);
+
+        $comfort =
+            (float) ($summary->comfort_rating ?? 0);
+
+        $safety =
+            (float) ($summary->safety_rating ?? 0);
+
+        $travelAgainRatio =
+            (float) ($summary->travel_again_ratio ?? 0);
+
+        /*
+         * Bus Quality Score:
+         *
+         * Overall       30%
+         * Punctuality   15%
+         * Cleanliness   10%
+         * Staff         10%
+         * Comfort       15%
+         * Safety        15%
+         * Travel Again   5%
+         */
+
+        $qualityScore =
+            (($overall / 5) * 100 * 0.30) +
+            (($punctuality / 5) * 100 * 0.15) +
+            (($cleanliness / 5) * 100 * 0.10) +
+            (($staff / 5) * 100 * 0.10) +
+            (($comfort / 5) * 100 * 0.15) +
+            (($safety / 5) * 100 * 0.15) +
+            ($travelAgainRatio * 100 * 0.05);
+
+        return [
+            'review_count' =>
+                (int) ($summary->review_count ?? 0),
+
+            'overall' => $overall,
+            'punctuality' => $punctuality,
+            'cleanliness' => $cleanliness,
+            'staff' => $staff,
+            'comfort' => $comfort,
+            'safety' => $safety,
+
+            'travel_again_ratio' =>
+                $travelAgainRatio,
+
+            'quality_score' =>
+                $qualityScore,
+        ];
     }
 
     /*
@@ -720,15 +506,11 @@ class PassengerFeedbackController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function passenger(
-        Request $request
-    ) {
-        $passenger =
-            $request
-                ->attributes
-                ->get(
-                    'passenger'
-                );
+    private function passenger(Request $request)
+    {
+        $passenger = $request->attributes->get(
+            'passenger'
+        );
 
         abort_unless(
             $passenger,

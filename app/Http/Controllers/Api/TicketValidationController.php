@@ -20,25 +20,13 @@ class TicketValidationController extends Controller
         $staff = $this->staff($request);
 
         $data = $request->validate([
-            'qr_token' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'trip_id' => [
-                'required',
-                'integer',
-                'exists:trips,id',
-            ],
+            'qr_token' => ['required', 'string', 'max:255'],
+            'trip_id' => ['required', 'integer', 'exists:trips,id'],
         ]);
 
         $tripId = (int) $data['trip_id'];
 
-        $this->assertAssignedStaff(
-            $staff,
-            $tripId
-        );
+        $this->assertAssignedStaff($staff, $tripId);
 
         $booking = $this->ticketBooking(
             $data['qr_token'],
@@ -48,188 +36,98 @@ class TicketValidationController extends Controller
         if (!$booking) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Ticket is invalid or does not belong to this trip.',
+                'message' => 'Ticket is invalid or does not belong to this trip.',
             ], 404);
         }
 
         if (
-            strtolower((string) $booking->payment_status) !== 'paid'
-            ||
-            strtolower((string) $booking->status) !== 'confirmed'
+            strtolower((string) $booking->payment_status) !== 'paid' ||
+            !in_array(
+                strtolower((string) $booking->status),
+                ['confirmed', 'completed'],
+                true
+            )
         ) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Ticket is not valid for check-in.',
+                'message' => 'Ticket is not valid for check-in.',
             ], 422);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Booking Passengers
-        |--------------------------------------------------------------------------
-        */
+        if (
+            strtolower((string) ($booking->ticket_status ?? 'valid')) === 'cancelled'
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket has been cancelled.',
+            ], 422);
+        }
 
         $passengers = DB::table('booking_passengers')
-            ->where(
-                'booking_id',
-                $booking->id
-            )
-            ->orderBy('seat_number')
+            ->where('booking_id', $booking->id)
+            ->orderByRaw("CAST(REPLACE(seat_number, 'S', '') AS UNSIGNED)")
             ->get()
-            ->map(function ($passenger) {
-                $name = $this->firstExistingValue(
-                    $passenger,
-                    [
-                        'passenger_name',
-                        'name',
-                        'full_name',
-                    ]
-                );
+            ->map(function ($passenger) use ($booking) {
+                $name = trim((string) ($passenger->passenger_name ?? ''));
 
-                $nic = $this->firstExistingValue(
-                    $passenger,
-                    [
-                        'passenger_nic',
-                        'nic',
-                        'nic_number',
-                        'national_id',
-                        'national_id_number',
-                    ]
-                );
+                if ($name === '') {
+                    $name = trim(
+                        (string) ($booking->primary_passenger_name ?? '')
+                    );
+                }
 
-                $seat = $this->firstExistingValue(
-                    $passenger,
-                    [
-                        'seat_number',
-                        'seat',
-                    ]
-                );
+                $nic = trim((string) ($passenger->nic ?? ''));
 
-                $gender = $this->firstExistingValue(
-                    $passenger,
-                    [
-                        'gender',
-                    ]
-                );
-
-                $checkedInAt = $this->firstExistingValue(
-                    $passenger,
-                    [
-                        'checked_in_at',
-                    ],
-                    null
-                );
+                if ($nic === '') {
+                    $nic = trim(
+                        (string) ($booking->primary_passenger_nic ?? '')
+                    );
+                }
 
                 return [
-                    'id' =>
-                        $passenger->id,
-
-                    'booking_passenger_id' =>
-                        $passenger->id,
-
-                    'passenger_name' =>
-                        $name ?: '-',
-
-                    'name' =>
-                        $name ?: '-',
-
-                    'passenger_nic' =>
-                        $nic ?: '-',
-
-                    'nic' =>
-                        $nic ?: '-',
-
-                    'seat_number' =>
-                        $seat ?: '-',
-
-                    'gender' =>
-                        $gender ?: null,
-
-                    'checked_in_at' =>
-                        $checkedInAt,
-
-                    'checked_in' =>
-                        !empty($checkedInAt),
+                    'id' => (int) $passenger->id,
+                    'booking_passenger_id' => (int) $passenger->id,
+                    'passenger_name' => $name !== '' ? $name : '-',
+                    'name' => $name !== '' ? $name : '-',
+                    'passenger_nic' => $nic !== '' ? $nic : '-',
+                    'nic' => $nic !== '' ? $nic : '-',
+                    'seat_number' => $passenger->seat_number ?: '-',
+                    'gender' => !empty($passenger->gender)
+                        ? strtoupper((string) $passenger->gender)
+                        : null,
+                    'checked_in_at' => $passenger->checked_in_at,
+                    'checked_in' => $passenger->checked_in_at !== null,
                 ];
             })
             ->values();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Primary Passenger
-        |--------------------------------------------------------------------------
-        */
-
-        $primaryPassenger =
-            $passengers->first();
+        $primaryPassenger = $passengers->first();
 
         $primaryPassengerName =
-            $primaryPassenger['passenger_name']
-            ?? '-';
+            $primaryPassenger['passenger_name'] ??
+            ($booking->primary_passenger_name ?: '-');
 
         $primaryPassengerNic =
-            $primaryPassenger['passenger_nic']
-            ?? '-';
-
-        /*
-        |--------------------------------------------------------------------------
-        | Response
-        |--------------------------------------------------------------------------
-        */
+            $primaryPassenger['passenger_nic'] ??
+            ($booking->primary_passenger_nic ?: '-');
 
         return response()->json([
             'success' => true,
-
             'ticket' => [
-                'booking_id' =>
-                    $booking->id,
-
-                'booking_reference' =>
-                    $booking->booking_reference,
-
-                'company_name' =>
-                    $booking->company_name
-                    ?? null,
-
-                'bus_name' =>
-                    $booking->bus_name
-                    ?? null,
-
-                'bus_number' =>
-                    $booking->bus_number
-                    ?? null,
-
-                'trip_id' =>
-                    $booking->trip_id,
-
-                'trip_code' =>
-                    $booking->trip_code,
-
-                'trip_status' =>
-                    $booking->trip_status,
-
-                'ticket_status' =>
-                    $booking->ticket_status
-                    ?? 'valid',
-
-                'primary_passenger_name' =>
-                    $primaryPassengerName,
-
-                'primary_passenger_nic' =>
-                    $primaryPassengerNic,
-
-                'boarding_stop' =>
-                    $booking->boarding_stop
-                    ?? '-',
-
-                'dropoff_stop' =>
-                    $booking->dropoff_stop
-                    ?? '-',
-
-                'passengers' =>
-                    $passengers,
+                'booking_id' => (int) $booking->id,
+                'booking_reference' => $booking->booking_reference,
+                'company_name' => $booking->company_name ?? null,
+                'bus_name' => $booking->bus_name ?? null,
+                'bus_number' => $booking->bus_number ?? null,
+                'trip_id' => (int) $booking->trip_id,
+                'trip_code' => $booking->trip_code,
+                'trip_status' => $booking->trip_status,
+                'ticket_status' => $booking->ticket_status ?? 'valid',
+                'primary_passenger_name' => $primaryPassengerName,
+                'primary_passenger_nic' => $primaryPassengerNic,
+                'boarding_stop' => $booking->boarding_stop ?: '-',
+                'dropoff_stop' => $booking->dropoff_stop ?: '-',
+                'passengers' => $passengers,
             ],
         ]);
     }
@@ -245,12 +143,7 @@ class TicketValidationController extends Controller
         $staff = $this->staff($request);
 
         $data = $request->validate([
-            'trip_id' => [
-                'required',
-                'integer',
-                'exists:trips,id',
-            ],
-
+            'trip_id' => ['required', 'integer', 'exists:trips,id'],
             'booking_passenger_id' => [
                 'required',
                 'integer',
@@ -258,317 +151,136 @@ class TicketValidationController extends Controller
             ],
         ]);
 
-        $tripId =
-            (int) $data['trip_id'];
+        $tripId = (int) $data['trip_id'];
+        $bookingPassengerId = (int) $data['booking_passenger_id'];
 
-        $bookingPassengerId =
-            (int) $data['booking_passenger_id'];
+        $this->assertAssignedStaff($staff, $tripId);
 
-        $this->assertAssignedStaff(
+        return DB::transaction(function () use (
             $staff,
-            $tripId
-        );
-
-        return DB::transaction(
-            function () use (
-                $staff,
-                $tripId,
-                $bookingPassengerId
-            ) {
-                /*
-                |--------------------------------------------------------------------------
-                | Find Passenger
-                |--------------------------------------------------------------------------
-                */
-
-                $passenger = DB::table(
-                    'booking_passengers as bp'
+            $tripId,
+            $bookingPassengerId
+        ) {
+            $passenger = DB::table('booking_passengers as bp')
+                ->join('bookings as b', 'b.id', '=', 'bp.booking_id')
+                ->join('trips as t', 't.id', '=', 'b.trip_id')
+                ->where('bp.id', $bookingPassengerId)
+                ->where('b.trip_id', $tripId)
+                ->select(
+                    'bp.*',
+                    'b.id as booking_id',
+                    'b.booking_reference',
+                    'b.primary_passenger_name',
+                    'b.primary_passenger_nic',
+                    'b.ticket_status',
+                    'b.status as booking_status',
+                    'b.payment_status',
+                    't.status as trip_status'
                 )
-                    ->join(
-                        'bookings as b',
-                        'b.id',
-                        '=',
-                        'bp.booking_id'
-                    )
-                    ->join(
-                        'trips as t',
-                        't.id',
-                        '=',
-                        'b.trip_id'
-                    )
-                    ->where(
-                        'bp.id',
-                        $bookingPassengerId
-                    )
-                    ->where(
-                        'b.trip_id',
-                        $tripId
-                    )
-                    ->select([
-                        'bp.*',
+                ->lockForUpdate()
+                ->first();
 
-                        'b.booking_reference',
+            if (!$passenger) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Passenger does not belong to this trip.',
+                ], 404);
+            }
 
-                        'b.status as booking_status',
+            if (
+                strtolower((string) $passenger->payment_status) !== 'paid' ||
+                strtolower((string) $passenger->booking_status) !== 'confirmed'
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Passenger ticket is not valid for check-in.',
+                ], 422);
+            }
 
-                        'b.payment_status',
+            if (
+                strtolower((string) ($passenger->ticket_status ?? 'valid')) === 'cancelled'
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This ticket has been cancelled.',
+                ], 422);
+            }
 
-                        't.status as trip_status',
-                    ])
-                    ->lockForUpdate()
-                    ->first();
+            if (
+                strtolower((string) $passenger->trip_status) !== 'active'
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Passenger check-in is available only while the trip is active.',
+                ], 422);
+            }
 
-                if (!$passenger) {
-                    return response()->json([
-                        'success' => false,
-                        'message' =>
-                            'Passenger does not belong to this trip.',
-                    ], 404);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Booking Validation
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    strtolower(
-                        (string)
-                        $passenger->payment_status
-                    ) !== 'paid'
-                    ||
-                    strtolower(
-                        (string)
-                        $passenger->booking_status
-                    ) !== 'confirmed'
-                ) {
-                    return response()->json([
-                        'success' => false,
-                        'message' =>
-                            'Passenger ticket is not valid for check-in.',
-                    ], 422);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Trip Must Be Active
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    strtolower(
-                        (string)
-                        $passenger->trip_status
-                    ) !== 'active'
-                ) {
-                    return response()->json([
-                        'success' => false,
-                        'message' =>
-                            'Passenger check-in is available only while the trip is active.',
-                    ], 422);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Already Checked In
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    $passenger->checked_in_at
-                    !== null
-                ) {
-                    return response()->json([
-                        'success' => true,
-
-                        'message' =>
-                            'Passenger has already been checked in.',
-
-                        'already_checked_in' =>
-                            true,
-
-                        'booking_passenger_id' =>
-                            $passenger->id,
-
-                        'checked_in_at' =>
-                            $passenger->checked_in_at,
-                    ]);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Save Check-In
-                |--------------------------------------------------------------------------
-                */
-
-                $update = [
-                    'checked_in_at' =>
-                        now(),
-                ];
-
-                if (
-                    Schema::hasColumn(
-                        'booking_passengers',
-                        'checked_in_by_staff_id'
-                    )
-                ) {
-                    $update[
-                        'checked_in_by_staff_id'
-                    ] = $staff->id;
-                }
-
-                if (
-                    Schema::hasColumn(
-                        'booking_passengers',
-                        'updated_at'
-                    )
-                ) {
-                    $update['updated_at'] =
-                        now();
-                }
-
-                DB::table('booking_passengers')
-                    ->where(
-                        'id',
-                        $passenger->id
-                    )
-                    ->update(
-                        $update
-                    );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Remaining Passengers
-                |--------------------------------------------------------------------------
-                */
-
-                $remainingPassengers =
-                    DB::table(
-                        'booking_passengers'
-                    )
-                        ->where(
-                            'booking_id',
-                            $passenger->booking_id
-                        )
-                        ->whereNull(
-                            'checked_in_at'
-                        )
-                        ->count();
-
-                /*
-                |--------------------------------------------------------------------------
-                | Mark Ticket Used Only When Everyone Is Checked In
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    $remainingPassengers === 0
-                    &&
-                    Schema::hasColumn(
-                        'bookings',
-                        'ticket_status'
-                    )
-                ) {
-                    $bookingUpdate = [
-                        'ticket_status' =>
-                            'used',
-                    ];
-
-                    if (
-                        Schema::hasColumn(
-                            'bookings',
-                            'updated_at'
-                        )
-                    ) {
-                        $bookingUpdate[
-                            'updated_at'
-                        ] = now();
-                    }
-
-                    DB::table('bookings')
-                        ->where(
-                            'id',
-                            $passenger->booking_id
-                        )
-                        ->update(
-                            $bookingUpdate
-                        );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Passenger Details
-                |--------------------------------------------------------------------------
-                */
-
-                $passengerName =
-                    $this->firstExistingValue(
-                        $passenger,
-                        [
-                            'passenger_name',
-                            'name',
-                            'full_name',
-                        ]
-                    );
-
-                $passengerNic =
-                    $this->firstExistingValue(
-                        $passenger,
-                        [
-                            'passenger_nic',
-                            'nic',
-                            'nic_number',
-                            'national_id',
-                            'national_id_number',
-                        ]
-                    );
-
-                $seatNumber =
-                    $this->firstExistingValue(
-                        $passenger,
-                        [
-                            'seat_number',
-                            'seat',
-                        ]
-                    );
-
+            if ($passenger->checked_in_at !== null) {
                 return response()->json([
                     'success' => true,
-
-                    'message' =>
-                        'Passenger checked in successfully.',
-
-                    'booking_id' =>
-                        $passenger->booking_id,
-
-                    'booking_reference' =>
-                        $passenger->booking_reference,
-
-                    'booking_passenger_id' =>
-                        $passenger->id,
-
-                    'passenger_name' =>
-                        $passengerName
-                        ?: '-',
-
-                    'passenger_nic' =>
-                        $passengerNic
-                        ?: '-',
-
-                    'seat_number' =>
-                        $seatNumber
-                        ?: '-',
-
-                    'checked_in_at' =>
-                        now()->toIso8601String(),
-
-                    'all_passengers_checked_in' =>
-                        $remainingPassengers === 0,
+                    'message' => 'Passenger has already been checked in.',
+                    'already_checked_in' => true,
+                    'booking_id' => (int) $passenger->booking_id,
+                    'booking_reference' => $passenger->booking_reference,
+                    'booking_passenger_id' => (int) $passenger->id,
+                    'passenger_name' => $this->passengerName($passenger),
+                    'passenger_nic' => $this->passengerNic($passenger),
+                    'seat_number' => $passenger->seat_number ?: '-',
+                    'checked_in_at' => $passenger->checked_in_at,
                 ]);
-            },
-            3
-        );
+            }
+
+            $checkInTime = now();
+
+            $update = [
+                'checked_in_at' => $checkInTime,
+                'updated_at' => $checkInTime,
+            ];
+
+            if (
+                Schema::hasColumn(
+                    'booking_passengers',
+                    'checked_in_by_staff_id'
+                )
+            ) {
+                $update['checked_in_by_staff_id'] = $staff->id;
+            }
+
+            DB::table('booking_passengers')
+                ->where('id', $passenger->id)
+                ->update($update);
+
+            $remainingPassengers = DB::table('booking_passengers')
+                ->where('booking_id', $passenger->booking_id)
+                ->whereNull('checked_in_at')
+                ->count();
+
+            if (
+                $remainingPassengers === 0 &&
+                Schema::hasColumn('bookings', 'ticket_status')
+            ) {
+                DB::table('bookings')
+                    ->where('id', $passenger->booking_id)
+                    ->update([
+                        'ticket_status' => 'used',
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Passenger checked in successfully.',
+                'already_checked_in' => false,
+                'booking_id' => (int) $passenger->booking_id,
+                'booking_reference' => $passenger->booking_reference,
+                'booking_passenger_id' => (int) $passenger->id,
+                'passenger_name' => $this->passengerName($passenger),
+                'passenger_nic' => $this->passengerNic($passenger),
+                'seat_number' => $passenger->seat_number ?: '-',
+                'checked_in_at' => $checkInTime->toIso8601String(),
+                'all_passengers_checked_in' => $remainingPassengers === 0,
+            ]);
+        }, 3);
     }
 
     /*
@@ -577,46 +289,19 @@ class TicketValidationController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function ticketBooking(
-        string $token,
-        int $tripId
-    ) {
-        if (
-            !Schema::hasColumn(
-                'bookings',
-                'ticket_token'
-            )
-        ) {
-            return null;
-        }
-
+    private function ticketBooking(string $token, int $tripId)
+    {
         return DB::table('bookings')
-            ->join(
-                'trips',
-                'trips.id',
-                '=',
-                'bookings.trip_id'
-            )
-            ->join(
-                'buses',
-                'buses.id',
-                '=',
-                'trips.bus_id'
-            )
+            ->join('trips', 'trips.id', '=', 'bookings.trip_id')
+            ->join('buses', 'buses.id', '=', 'trips.bus_id')
             ->leftJoin(
                 'operators',
                 'operators.id',
                 '=',
                 'trips.operator_id'
             )
-            ->where(
-                'bookings.ticket_token',
-                $token
-            )
-            ->where(
-                'bookings.trip_id',
-                $tripId
-            )
+            ->where('bookings.ticket_token', trim($token))
+            ->where('bookings.trip_id', $tripId)
             ->select(
                 'bookings.*',
                 'trips.trip_code',
@@ -630,38 +315,42 @@ class TicketValidationController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Read First Existing Value
+    | Passenger Helpers
     |--------------------------------------------------------------------------
-    |
-    | This lets the API work even if the passenger table uses names such as
-    | passenger_nic, nic, nic_number, etc.
-    |
     */
 
-    private function firstExistingValue(
-        object $record,
-        array $keys,
-        $fallback = ''
-    ) {
-        foreach ($keys as $key) {
-            if (
-                property_exists(
-                    $record,
-                    $key
-                )
-                &&
-                $record->{$key} !== null
-                &&
-                trim(
-                    (string)
-                    $record->{$key}
-                ) !== ''
-            ) {
-                return $record->{$key};
-            }
+    private function passengerName($passenger): string
+    {
+        $name = trim(
+            (string) ($passenger->passenger_name ?? '')
+        );
+
+        if ($name !== '') {
+            return $name;
         }
 
-        return $fallback;
+        $primary = trim(
+            (string) ($passenger->primary_passenger_name ?? '')
+        );
+
+        return $primary !== '' ? $primary : '-';
+    }
+
+    private function passengerNic($passenger): string
+    {
+        $nic = trim(
+            (string) ($passenger->nic ?? '')
+        );
+
+        if ($nic !== '') {
+            return $nic;
+        }
+
+        $primary = trim(
+            (string) ($passenger->primary_passenger_nic ?? '')
+        );
+
+        return $primary !== '' ? $primary : '-';
     }
 
     /*
@@ -670,13 +359,9 @@ class TicketValidationController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    private function staff(
-        Request $request
-    ) {
-        $staff =
-            $request->attributes->get(
-                'staff'
-            );
+    private function staff(Request $request)
+    {
+        $staff = $request->attributes->get('staff');
 
         abort_unless(
             $staff,
@@ -697,28 +382,15 @@ class TicketValidationController extends Controller
         $staff,
         int $tripId
     ): void {
-        $assigned =
-            DB::table('trips')
-                ->where(
-                    'id',
-                    $tripId
-                )
-                ->where(
-                    function ($query) use (
-                        $staff
-                    ) {
-                        $query
-                            ->where(
-                                'driver_id',
-                                $staff->id
-                            )
-                            ->orWhere(
-                                'conductor_id',
-                                $staff->id
-                            );
-                    }
-                )
-                ->exists();
+        $assigned = DB::table('trips')
+            ->where('id', $tripId)
+            ->where('operator_id', $staff->operator_id)
+            ->where(function ($query) use ($staff) {
+                $query
+                    ->where('driver_id', $staff->id)
+                    ->orWhere('conductor_id', $staff->id);
+            })
+            ->exists();
 
         abort_unless(
             $assigned,
