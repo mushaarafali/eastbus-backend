@@ -3,14 +3,12 @@
 use App\Http\Middleware\PassengerApiAuth;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\StaffApiAuth;
-
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
-return Application::configure(
-    basePath: dirname(__DIR__)
-)
+return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__ . '/../routes/web.php',
         api: __DIR__ . '/../routes/api.php',
@@ -18,11 +16,31 @@ return Application::configure(
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        /*
+        |--------------------------------------------------------------------------
+        | Trust Railway Reverse Proxy
+        |--------------------------------------------------------------------------
+        |
+        | Railway terminates HTTPS before forwarding the request to Laravel.
+        | Trust the proxy headers so Laravel correctly recognises HTTPS,
+        | secure cookies and the original host.
+        |
+        */
 
-        // Trust Railway reverse proxy so Laravel detects HTTPS correctly.
         $middleware->trustProxies(
-            at: '*'
+            at: '*',
+            headers: Request::HEADER_X_FORWARDED_FOR
+                | Request::HEADER_X_FORWARDED_HOST
+                | Request::HEADER_X_FORWARDED_PORT
+                | Request::HEADER_X_FORWARDED_PROTO
+                | Request::HEADER_X_FORWARDED_AWS_ELB
         );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Middleware Aliases
+        |--------------------------------------------------------------------------
+        */
 
         $middleware->alias([
             'staff.api' => StaffApiAuth::class,

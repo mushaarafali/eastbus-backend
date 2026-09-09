@@ -17,31 +17,19 @@ Route::get('/', fn () => redirect()->route('login'));
 
 /*
 |--------------------------------------------------------------------------
-| Guest Routes
+| Guest Authentication
 |--------------------------------------------------------------------------
 */
 
 Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'loginForm'])->name('login');
+    Route::post('/login', [AuthController::class, 'login'])->name('login.post');
 
-    Route::get(
-        '/login',
-        [AuthController::class, 'loginForm']
-    )->name('login');
+    Route::get('/operator/register', [AuthController::class, 'registerForm'])
+        ->name('operator.register');
 
-    Route::post(
-        '/login',
-        [AuthController::class, 'login']
-    )->name('login.post');
-
-    Route::get(
-        '/operator/register',
-        [AuthController::class, 'registerForm']
-    )->name('operator.register');
-
-    Route::post(
-        '/operator/register',
-        [AuthController::class, 'registerOperator']
-    )->name('operator.register.post');
+    Route::post('/operator/register', [AuthController::class, 'registerOperator'])
+        ->name('operator.register.post');
 });
 
 /*
@@ -50,10 +38,7 @@ Route::middleware('guest')->group(function () {
 |--------------------------------------------------------------------------
 */
 
-Route::post(
-    '/logout',
-    [AuthController::class, 'logout']
-)
+Route::post('/logout', [AuthController::class, 'logout'])
     ->middleware('auth')
     ->name('logout');
 
@@ -65,22 +50,11 @@ Route::post(
 
 Route::prefix('admin')
     ->name('admin.')
-    ->middleware([
-        'auth',
-        'role:admin',
-    ])
+    ->middleware(['auth', 'role:admin'])
     ->group(function () {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Dashboard
-        |--------------------------------------------------------------------------
-        */
-
-        Route::get(
-            '/dashboard',
-            [AdminController::class, 'dashboard']
-        )->name('dashboard');
+        Route::get('/dashboard', [AdminController::class, 'dashboard'])
+            ->name('dashboard');
 
         /*
         |--------------------------------------------------------------------------
@@ -88,15 +62,11 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/operators',
-            [AdminController::class, 'operators']
-        )->name('operators');
+        Route::get('/operators', [AdminController::class, 'operators'])
+            ->name('operators');
 
-        Route::patch(
-            '/operators/{operator}/toggle',
-            [AdminController::class, 'toggleOperator']
-        )->name('operators.toggle');
+        Route::patch('/operators/{operator}/toggle', [AdminController::class, 'toggleOperator'])
+            ->name('operators.toggle');
 
         /*
         |--------------------------------------------------------------------------
@@ -104,15 +74,11 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/passengers',
-            [AdminController::class, 'passengers']
-        )->name('passengers');
+        Route::get('/passengers', [AdminController::class, 'passengers'])
+            ->name('passengers');
 
-        Route::patch(
-            '/passengers/{user}/toggle',
-            [AdminController::class, 'togglePassenger']
-        )->name('passengers.toggle');
+        Route::patch('/passengers/{user}/toggle', [AdminController::class, 'togglePassenger'])
+            ->name('passengers.toggle');
 
         /*
         |--------------------------------------------------------------------------
@@ -120,61 +86,32 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/buses',
-            [AdminController::class, 'buses']
-        )->name('buses');
+        Route::get('/buses', [AdminController::class, 'buses'])
+            ->name('buses');
 
         /*
         |--------------------------------------------------------------------------
         | Master Routes
         |--------------------------------------------------------------------------
-        |
-        | System Admin manages all master routes and fixed roadways.
-        |
-        | Example:
-        | 86
-        | 04/86
-        | 48
-        | 41/48
-        | 22
-        | 98
-        | 38
-        | 21
-        | 76/3
-        | 35
-        |
         */
 
-        Route::get(
-            '/routes',
-            [AdminController::class, 'masterRoutes']
-        )->name('routes.index');
+        Route::get('/routes', [AdminController::class, 'masterRoutes'])
+            ->name('routes.index');
 
-        Route::get(
-            '/routes/create',
-            [AdminController::class, 'createMasterRoute']
-        )->name('routes.create');
+        Route::get('/routes/create', [AdminController::class, 'createMasterRoute'])
+            ->name('routes.create');
 
-        Route::post(
-            '/routes',
-            [AdminController::class, 'storeMasterRoute']
-        )->name('routes.store');
+        Route::post('/routes', [AdminController::class, 'storeMasterRoute'])
+            ->name('routes.store');
 
-        Route::get(
-            '/routes/{id}/edit',
-            [AdminController::class, 'editMasterRoute']
-        )->name('routes.edit');
+        Route::get('/routes/{id}/edit', [AdminController::class, 'editMasterRoute'])
+            ->name('routes.edit');
 
-        Route::put(
-            '/routes/{id}',
-            [AdminController::class, 'updateMasterRoute']
-        )->name('routes.update');
+        Route::put('/routes/{id}', [AdminController::class, 'updateMasterRoute'])
+            ->name('routes.update');
 
-        Route::delete(
-            '/routes/{id}',
-            [AdminController::class, 'destroyMasterRoute']
-        )->name('routes.destroy');
+        Route::delete('/routes/{id}', [AdminController::class, 'destroyMasterRoute'])
+            ->name('routes.destroy');
 
         /*
         |--------------------------------------------------------------------------
@@ -182,10 +119,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/trips',
-            [AdminController::class, 'trips']
-        )->name('trips');
+        Route::get('/trips', [AdminController::class, 'trips'])
+            ->name('trips');
 
         /*
         |--------------------------------------------------------------------------
@@ -193,10 +128,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/bookings',
-            [AdminController::class, 'bookings']
-        )->name('bookings');
+        Route::get('/bookings', [AdminController::class, 'bookings'])
+            ->name('bookings');
 
         /*
         |--------------------------------------------------------------------------
@@ -204,10 +137,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/payments',
-            [AdminController::class, 'payments']
-        )->name('payments');
+        Route::get('/payments', [AdminController::class, 'payments'])
+            ->name('payments');
 
         /*
         |--------------------------------------------------------------------------
@@ -215,10 +146,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/tracking',
-            [AdminController::class, 'tracking']
-        )->name('tracking');
+        Route::get('/tracking', [AdminController::class, 'tracking'])
+            ->name('tracking');
 
         /*
         |--------------------------------------------------------------------------
@@ -226,10 +155,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/reports',
-            [AdminController::class, 'reports']
-        )->name('reports');
+        Route::get('/reports', [AdminController::class, 'reports'])
+            ->name('reports');
 
         /*
         |--------------------------------------------------------------------------
@@ -237,26 +164,20 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/notifications',
-            [AdminController::class, 'notifications']
-        )->name('notifications');
+        Route::get('/notifications', [AdminController::class, 'notifications'])
+            ->name('notifications');
 
-        Route::post(
-            '/notifications',
-            [AdminController::class, 'sendNotification']
-        )->name('notifications.send');
+        Route::post('/notifications', [AdminController::class, 'sendNotification'])
+            ->name('notifications.send');
 
         /*
         |--------------------------------------------------------------------------
-        | Alerts
+        | Emergency Alerts
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/alerts',
-            [AdminController::class, 'alerts']
-        )->name('alerts');
+        Route::get('/alerts', [AdminController::class, 'alerts'])
+            ->name('alerts');
 
         /*
         |--------------------------------------------------------------------------
@@ -264,10 +185,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/logs',
-            [AdminController::class, 'logs']
-        )->name('logs');
+        Route::get('/logs', [AdminController::class, 'logs'])
+            ->name('logs');
 
         /*
         |--------------------------------------------------------------------------
@@ -275,10 +194,8 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/settings',
-            [AdminController::class, 'settings']
-        )->name('settings');
+        Route::get('/settings', [AdminController::class, 'settings'])
+            ->name('settings');
 
         /*
         |--------------------------------------------------------------------------
@@ -286,70 +203,47 @@ Route::prefix('admin')
         |--------------------------------------------------------------------------
         */
 
-        Route::post(
-            '/backup',
-            [AdminController::class, 'backup']
-        )->name('backup');
+        Route::post('/backup', [AdminController::class, 'backup'])
+            ->name('backup');
 
         /*
         |--------------------------------------------------------------------------
-        | Fixed Schedules
+        | Fixed Bus Schedules
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/fixed-schedules',
-            [AdminFixedScheduleController::class, 'index']
-        )->name('fixed-schedules.index');
+        Route::get('/fixed-schedules', [AdminFixedScheduleController::class, 'index'])
+            ->name('fixed-schedules.index');
 
-        Route::get(
-            '/fixed-schedules/create',
-            [AdminFixedScheduleController::class, 'create']
-        )->name('fixed-schedules.create');
+        Route::get('/fixed-schedules/create', [AdminFixedScheduleController::class, 'create'])
+            ->name('fixed-schedules.create');
 
-        Route::post(
-            '/fixed-schedules',
-            [AdminFixedScheduleController::class, 'store']
-        )->name('fixed-schedules.store');
+        Route::post('/fixed-schedules', [AdminFixedScheduleController::class, 'store'])
+            ->name('fixed-schedules.store');
 
         /*
-         * Load roadway stops from selected Master Route.
-         *
-         * Keep this before /fixed-schedules/{id}/edit.
+         * This specific route must stay before:
+         * /fixed-schedules/{id}/edit
          */
-
         Route::get(
             '/fixed-schedules/routes/{routeId}/stops',
-            [
-                AdminFixedScheduleController::class,
-                'routeStops',
-            ]
+            [AdminFixedScheduleController::class, 'routeStops']
         )->name('fixed-schedules.route-stops');
 
-        Route::get(
-            '/fixed-schedules/{id}/edit',
-            [AdminFixedScheduleController::class, 'edit']
-        )->name('fixed-schedules.edit');
+        Route::get('/fixed-schedules/{id}/edit', [AdminFixedScheduleController::class, 'edit'])
+            ->name('fixed-schedules.edit');
 
-        Route::put(
-            '/fixed-schedules/{id}',
-            [AdminFixedScheduleController::class, 'update']
-        )->name('fixed-schedules.update');
+        Route::put('/fixed-schedules/{id}', [AdminFixedScheduleController::class, 'update'])
+            ->name('fixed-schedules.update');
 
-        Route::patch(
-            '/fixed-schedules/{id}/publish',
-            [AdminFixedScheduleController::class, 'togglePublish']
-        )->name('fixed-schedules.publish');
+        Route::patch('/fixed-schedules/{id}/publish', [AdminFixedScheduleController::class, 'togglePublish'])
+            ->name('fixed-schedules.publish');
 
-        Route::patch(
-            '/fixed-schedules/{id}/active',
-            [AdminFixedScheduleController::class, 'toggleActive']
-        )->name('fixed-schedules.active');
+        Route::patch('/fixed-schedules/{id}/active', [AdminFixedScheduleController::class, 'toggleActive'])
+            ->name('fixed-schedules.active');
 
-        Route::delete(
-            '/fixed-schedules/{id}',
-            [AdminFixedScheduleController::class, 'destroy']
-        )->name('fixed-schedules.destroy');
+        Route::delete('/fixed-schedules/{id}', [AdminFixedScheduleController::class, 'destroy'])
+            ->name('fixed-schedules.destroy');
     });
 
 /*
@@ -360,22 +254,11 @@ Route::prefix('admin')
 
 Route::prefix('operator')
     ->name('operator.')
-    ->middleware([
-        'auth',
-        'role:operator',
-    ])
+    ->middleware(['auth', 'role:operator'])
     ->group(function () {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Dashboard
-        |--------------------------------------------------------------------------
-        */
-
-        Route::get(
-            '/dashboard',
-            [OperatorController::class, 'dashboard']
-        )->name('dashboard');
+        Route::get('/dashboard', [OperatorController::class, 'dashboard'])
+            ->name('dashboard');
 
         /*
         |--------------------------------------------------------------------------
@@ -383,15 +266,11 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/profile',
-            [OperatorController::class, 'profile']
-        )->name('profile');
+        Route::get('/profile', [OperatorController::class, 'profile'])
+            ->name('profile');
 
-        Route::put(
-            '/profile',
-            [OperatorController::class, 'updateProfile']
-        )->name('profile.update');
+        Route::put('/profile', [OperatorController::class, 'updateProfile'])
+            ->name('profile.update');
 
         /*
         |--------------------------------------------------------------------------
@@ -399,30 +278,20 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/buses',
-            [OperatorController::class, 'buses']
-        )->name('buses');
+        Route::get('/buses', [OperatorController::class, 'buses'])
+            ->name('buses');
 
-        Route::post(
-            '/buses',
-            [OperatorController::class, 'storeBus']
-        )->name('buses.store');
+        Route::post('/buses', [OperatorController::class, 'storeBus'])
+            ->name('buses.store');
 
-        Route::put(
-            '/buses/{bus}',
-            [OperatorController::class, 'updateBus']
-        )->name('buses.update');
+        Route::put('/buses/{bus}', [OperatorController::class, 'updateBus'])
+            ->name('buses.update');
 
-        Route::get(
-            '/buses/{bus}/seats',
-            [OperatorController::class, 'seats']
-        )->name('seats');
+        Route::get('/buses/{bus}/seats', [OperatorController::class, 'seats'])
+            ->name('seats');
 
-        Route::patch(
-            '/buses/{bus}/seats/{seat}',
-            [OperatorController::class, 'toggleSeat']
-        )->name('seats.toggle');
+        Route::patch('/buses/{bus}/seats/{seat}', [OperatorController::class, 'toggleSeat'])
+            ->name('seats.toggle');
 
         /*
         |--------------------------------------------------------------------------
@@ -430,89 +299,50 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/staff',
-            [OperatorController::class, 'staff']
-        )->name('staff');
+        Route::get('/staff', [OperatorController::class, 'staff'])
+            ->name('staff');
 
-        Route::post(
-            '/staff',
-            [OperatorController::class, 'storeStaff']
-        )->name('staff.store');
+        Route::post('/staff', [OperatorController::class, 'storeStaff'])
+            ->name('staff.store');
 
-        Route::patch(
-            '/staff/{staff}/toggle',
-            [OperatorController::class, 'toggleStaff']
-        )->name('staff.toggle');
+        Route::patch('/staff/{staff}/toggle', [OperatorController::class, 'toggleStaff'])
+            ->name('staff.toggle');
 
         /*
         |--------------------------------------------------------------------------
-        | Operator Bus Services
+        | Bus Route Services
         |--------------------------------------------------------------------------
         |
-        | Operator does NOT create or edit master routes.
-        |
-        | Operator:
-        |
-        | Select Bus
-        |      ↓
-        | Select Master Route
-        |      ↓
-        | Load Fixed Roadway
-        |      ↓
-        | Select Booking Points
-        |      ↓
-        | Add Times
-        |
-        | Existing /routes URL names are retained so old navigation
-        | does not need immediate changes.
-        |
+        | Operator selects an existing Master Route and configures:
+        | Bus → Master Route → Roadway → Booking Points → Times
+        |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/routes',
-            [OperatorRouteController::class, 'index']
-        )->name('routes.index');
+        Route::get('/routes', [OperatorRouteController::class, 'index'])
+            ->name('routes.index');
 
-        Route::get(
-            '/routes/create',
-            [OperatorRouteController::class, 'create']
-        )->name('routes.create');
+        Route::get('/routes/create', [OperatorRouteController::class, 'create'])
+            ->name('routes.create');
 
         /*
-         * AJAX:
-         * Load fixed roadway from selected master route.
-         *
-         * Keep this before /routes/{route}/edit.
+         * Keep this specific AJAX route before /routes/{route}/edit.
          */
-
         Route::get(
             '/routes/master/{routeId}/stops',
-            [
-                OperatorRouteController::class,
-                'routeStops',
-            ]
+            [OperatorRouteController::class, 'routeStops']
         )->name('routes.stops');
 
-        Route::post(
-            '/routes',
-            [OperatorRouteController::class, 'store']
-        )->name('routes.store');
+        Route::post('/routes', [OperatorRouteController::class, 'store'])
+            ->name('routes.store');
 
-        Route::get(
-            '/routes/{route}/edit',
-            [OperatorRouteController::class, 'edit']
-        )->name('routes.edit');
+        Route::get('/routes/{route}/edit', [OperatorRouteController::class, 'edit'])
+            ->name('routes.edit');
 
-        Route::put(
-            '/routes/{route}',
-            [OperatorRouteController::class, 'update']
-        )->name('routes.update');
+        Route::put('/routes/{route}', [OperatorRouteController::class, 'update'])
+            ->name('routes.update');
 
-        Route::delete(
-            '/routes/{route}',
-            [OperatorRouteController::class, 'destroy']
-        )->name('routes.destroy');
+        Route::delete('/routes/{route}', [OperatorRouteController::class, 'destroy'])
+            ->name('routes.destroy');
 
         /*
         |--------------------------------------------------------------------------
@@ -520,30 +350,20 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/trips',
-            [OperatorController::class, 'trips']
-        )->name('trips');
+        Route::get('/trips', [OperatorController::class, 'trips'])
+            ->name('trips');
 
-        Route::post(
-            '/trips',
-            [OperatorController::class, 'storeTrip']
-        )->name('trips.store');
+        Route::post('/trips', [OperatorController::class, 'storeTrip'])
+            ->name('trips.store');
 
-        Route::get(
-            '/trips/{trip}/edit',
-            [OperatorController::class, 'editTrip']
-        )->name('trips.edit');
+        Route::get('/trips/{trip}/edit', [OperatorController::class, 'editTrip'])
+            ->name('trips.edit');
 
-        Route::patch(
-            '/trips/{trip}',
-            [OperatorController::class, 'updateTrip']
-        )->name('trips.update');
+        Route::patch('/trips/{trip}', [OperatorController::class, 'updateTrip'])
+            ->name('trips.update');
 
-        Route::patch(
-            '/trips/{trip}/publish',
-            [OperatorController::class, 'toggleTripPublish']
-        )->name('trips.publish');
+        Route::patch('/trips/{trip}/publish', [OperatorController::class, 'toggleTripPublish'])
+            ->name('trips.publish');
 
         /*
         |--------------------------------------------------------------------------
@@ -551,15 +371,11 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/bookings',
-            [OperatorController::class, 'bookings']
-        )->name('bookings');
+        Route::get('/bookings', [OperatorController::class, 'bookings'])
+            ->name('bookings');
 
-        Route::patch(
-            '/bookings/{booking}',
-            [OperatorController::class, 'updateBooking']
-        )->name('bookings.update');
+        Route::patch('/bookings/{booking}', [OperatorController::class, 'updateBooking'])
+            ->name('bookings.update');
 
         /*
         |--------------------------------------------------------------------------
@@ -567,10 +383,8 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/tracking',
-            [OperatorController::class, 'tracking']
-        )->name('tracking');
+        Route::get('/tracking', [OperatorController::class, 'tracking'])
+            ->name('tracking');
 
         /*
         |--------------------------------------------------------------------------
@@ -578,10 +392,8 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/payments',
-            [OperatorController::class, 'payments']
-        )->name('payments');
+        Route::get('/payments', [OperatorController::class, 'payments'])
+            ->name('payments');
 
         /*
         |--------------------------------------------------------------------------
@@ -589,10 +401,8 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/reports',
-            [OperatorController::class, 'reports']
-        )->name('reports');
+        Route::get('/reports', [OperatorController::class, 'reports'])
+            ->name('reports');
 
         /*
         |--------------------------------------------------------------------------
@@ -600,10 +410,8 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/notifications',
-            [OperatorController::class, 'notifications']
-        )->name('notifications');
+        Route::get('/notifications', [OperatorController::class, 'notifications'])
+            ->name('notifications');
 
         /*
         |--------------------------------------------------------------------------
@@ -611,13 +419,9 @@ Route::prefix('operator')
         |--------------------------------------------------------------------------
         */
 
-        Route::get(
-            '/alerts',
-            [OperatorController::class, 'alerts']
-        )->name('alerts');
+        Route::get('/alerts', [OperatorController::class, 'alerts'])
+            ->name('alerts');
 
-        Route::patch(
-            '/alerts/{alert}/resolve',
-            [OperatorController::class, 'resolveAlert']
-        )->name('alerts.resolve');
+        Route::patch('/alerts/{alert}/resolve', [OperatorController::class, 'resolveAlert'])
+            ->name('alerts.resolve');
     });

@@ -3,8 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+
     <title>EastBus Login</title>
-    <link rel="stylesheet" href="/css/eastbus.css">
+    <link rel="stylesheet" href="{{ asset('css/eastbus.css') }}">
 
     <style>
         * {
@@ -110,17 +112,16 @@
             padding: 12px 14px;
             border: 1px solid #d7dfec;
             border-radius: 12px;
-            background: #ffffff;
+            background: #fff;
             color: #172033;
             font-size: 15px;
             outline: none;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
         }
 
         .form-control:focus {
             border-color: #175cd3;
             box-shadow: 0 0 0 4px rgba(23, 92, 211, 0.10);
-            background: #ffffff;
         }
 
         .password-input {
@@ -161,12 +162,12 @@
             border: 0;
             border-radius: 12px;
             background: linear-gradient(135deg, #064bd8, #123b96);
-            color: #ffffff;
+            color: #fff;
             font-size: 15px;
             font-weight: 800;
             cursor: pointer;
-            transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
             box-shadow: 0 10px 24px rgba(6, 75, 216, 0.23);
+            transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
         }
 
         .login-btn:hover {
@@ -243,18 +244,23 @@
 <body class="auth-page">
     <div class="auth-wrapper">
         <div class="auth-card">
+
             <div class="logo-area">
                 <img src="{{ asset('images/east bus logo.png') }}" alt="EastBus.lk Logo">
                 <h1 class="portal-title">Welcome Back</h1>
                 <p class="portal-subtitle">Admin & Bus Operator Portal</p>
             </div>
 
-            @if(session('success'))
-                <div class="flash success">{{ session('success') }}</div>
+            @if (session('success'))
+                <div class="flash success">
+                    {{ session('success') }}
+                </div>
             @endif
 
-            @if($errors->any())
-                <div class="flash error">{{ $errors->first() }}</div>
+            @if ($errors->any())
+                <div class="flash error">
+                    {{ $errors->first() }}
+                </div>
             @endif
 
             <form method="POST" action="{{ route('login.post') }}">
@@ -263,22 +269,45 @@
                 <div class="form-group">
                     <label for="email">Email Address</label>
                     <div class="input-wrap">
-                        <input id="email" class="form-control" type="email" name="email" value="{{ old('email') }}" placeholder="Enter your email" autocomplete="email" required autofocus>
+                        <input
+                            id="email"
+                            class="form-control"
+                            type="email"
+                            name="email"
+                            value="{{ old('email') }}"
+                            placeholder="Enter your email"
+                            autocomplete="email"
+                            required
+                            autofocus
+                        >
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label for="password">Password</label>
                     <div class="input-wrap">
-                        <input id="password" class="form-control password-input" type="password" name="password" placeholder="Enter your password" autocomplete="current-password" required>
+                        <input
+                            id="password"
+                            class="form-control password-input"
+                            type="password"
+                            name="password"
+                            placeholder="Enter your password"
+                            autocomplete="current-password"
+                            required
+                        >
 
                         <button id="togglePassword" class="password-toggle" type="button" aria-label="Show password">
-                            <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/>
                                 <circle cx="12" cy="12" r="3"/>
                             </svg>
 
-                            <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                            <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round"
+                                 style="display:none;">
                                 <path d="M3 3l18 18"/>
                                 <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/>
                                 <path d="M9.9 4.2A10.6 10.6 0 0 1 12 4c6.5 0 10 8 10 8a18.8 18.8 0 0 1-2.1 3.2"/>
@@ -288,7 +317,9 @@
                     </div>
                 </div>
 
-                <button type="submit" class="login-btn">Login to EastBus</button>
+                <button type="submit" class="login-btn">
+                    Login to EastBus
+                </button>
             </form>
 
             <div class="divider">NEW BUS OPERATOR</div>
@@ -299,7 +330,7 @@
             </div>
 
             <div class="footer-note">
-                Secure access to EastBus.lk - Eastern Bus Kingdom - Mushaaraf Ali Ntr
+                Secure access to EastBus.lk - Eastern Bus Kingdom - Mushaaraf Ali
             </div>
         </div>
     </div>
@@ -316,7 +347,11 @@
             passwordInput.type = isHidden ? 'text' : 'password';
             eyeOpen.style.display = isHidden ? 'none' : 'block';
             eyeClosed.style.display = isHidden ? 'block' : 'none';
-            togglePassword.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+
+            togglePassword.setAttribute(
+                'aria-label',
+                isHidden ? 'Hide password' : 'Show password'
+            );
         });
     </script>
 </body>
