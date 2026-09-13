@@ -242,21 +242,25 @@ class PassengerBookingController extends Controller
             )
             ->values();
 
-        $fixedServicesQuery = DB::table('fixed_services as fs')
-            ->join('routes as r', 'r.id', '=', 'fs.route_id')
-            ->whereIn('fs.route_id', $matchingRouteIds->all());
+       $fixedServicesQuery = DB::table('fixed_services as fs')
+    ->join('routes as r', 'r.id', '=', 'fs.route_id')
+    ->whereIn('fs.route_id', $matchingRouteIds->all())
+    ->whereNull('fs.operator_id')
+    ->whereNull('fs.bus_id')
+    ->whereNotNull('fs.bus_name')
+    ->whereRaw("TRIM(fs.bus_name) <> ''");
 
-        if (Schema::hasColumn('fixed_services', 'is_active')) {
-            $fixedServicesQuery->where('fs.is_active', true);
-        }
+    if (Schema::hasColumn('fixed_services', 'is_active')) {
+        $fixedServicesQuery->where('fs.is_active', true);
+    }
 
-        if (Schema::hasColumn('fixed_services', 'is_published')) {
-            $fixedServicesQuery->where('fs.is_published', true);
-        }
+    if (Schema::hasColumn('fixed_services', 'is_published')) {
+        $fixedServicesQuery->where('fs.is_published', true);
+    }
 
-        if (Schema::hasColumn('routes', 'is_active')) {
-            $fixedServicesQuery->where('r.is_active', true);
-        }
+    if (Schema::hasColumn('routes', 'is_active')) {
+        $fixedServicesQuery->where('r.is_active', true);
+    }
 
         $fixedServices = $fixedServicesQuery
             ->select(
@@ -3532,7 +3536,7 @@ class PassengerBookingController extends Controller
                 return null;
             }
         }
-        
+
         $departureTime =
             $boarding->departure_time ??
             $boarding->arrival_time;
