@@ -70,20 +70,13 @@ class PassengerBookingController extends Controller
         $destination = trim($data['destination']);
         $date = Carbon::parse($data['date'], self::TIMEZONE)->toDateString();
 
-        if (
-            Carbon::parse($date, self::TIMEZONE)
-                ->startOfDay()
-                ->lt(Carbon::now(self::TIMEZONE)->startOfDay())
-        ) {
+        if (Carbon::parse($date, self::TIMEZONE)->startOfDay()->lt(Carbon::now(self::TIMEZONE)->startOfDay())) {
             throw ValidationException::withMessages([
-                'date' => 'Past dates cannot be searched for booking.',
+                'date' => 'Past dates cannot be searched.',
             ]);
         }
 
-        $matchingRouteIds = $this->findRoutesContainingStops(
-            $origin,
-            $destination
-        );
+        $matchingRouteIds = $this->findRoutesContainingStops($origin, $destination);
 
         if ($matchingRouteIds->isEmpty()) {
             return response()->json([
@@ -93,6 +86,10 @@ class PassengerBookingController extends Controller
                 'date' => $date,
                 'minimum_journey_km' => self::MIN_JOURNEY_KM,
                 'trips' => [],
+                'fixed_services' => [],
+                'bookable_count' => 0,
+                'timetable_count' => 0,
+                'total_services' => 0,
             ]);
         }
 
@@ -105,7 +102,7 @@ class PassengerBookingController extends Controller
             ->orderBy('trips.departure_time')
             ->get();
 
-        $matches = $trips
+        $bookableTrips = $trips
             ->map(function ($trip) use ($origin, $destination) {
                 if (
                     empty($trip->service_operator_id) ||
@@ -117,55 +114,32 @@ class PassengerBookingController extends Controller
                 }
 
                 $bookingStops = $this->bookingStopsForTrip($trip);
-
                 if ($bookingStops->isEmpty()) {
                     return null;
                 }
 
                 $boarding = $bookingStops->first(
-                    fn ($stop) =>
-                        $this->sameStopName($stop->name, $origin) &&
-                        (bool) $stop->boarding_allowed
+                    fn ($stop) => $this->sameStopName($stop->name, $origin) && (bool) $stop->boarding_allowed
                 );
-
                 $dropoff = $bookingStops->first(
-                    fn ($stop) =>
-                        $this->sameStopName($stop->name, $destination) &&
-                        (bool) $stop->dropoff_allowed
+                    fn ($stop) => $this->sameStopName($stop->name, $destination) && (bool) $stop->dropoff_allowed
                 );
 
-                if (!$boarding || !$dropoff) {
-                    return null;
-                }
-
-                if (
-                    (int) $boarding->_journey_order >=
-                    (int) $dropoff->_journey_order
-                ) {
+                if (!$boarding || !$dropoff || (int) $boarding->_journey_order >= (int) $dropoff->_journey_order) {
                     return null;
                 }
 
                 $journeyDistance = $this->journeyDistance($boarding, $dropoff);
-
                 if ($journeyDistance < self::MIN_JOURNEY_KM) {
                     return null;
                 }
 
-                $fareStageDifference = abs(
-                    (int) $dropoff->fare_stage_no -
-                    (int) $boarding->fare_stage_no
-                );
-
+                $fareStageDifference = abs((int) $dropoff->fare_stage_no - (int) $boarding->fare_stage_no);
                 if ($fareStageDifference < 1) {
                     return null;
                 }
 
-                $segmentFare = $this->calculateStageFare(
-                    $trip,
-                    $boarding,
-                    $dropoff
-                );
-
+                $segmentFare = $this->calculateStageFare($trip, $boarding, $dropoff);
                 if ($segmentFare === null) {
                     return null;
                 }
@@ -181,9 +155,7 @@ class PassengerBookingController extends Controller
                 $trip->fare_stage_difference = $fareStageDifference;
                 $trip->segment_fare = $segmentFare;
                 $trip->fare = $segmentFare;
-                $trip->direction = $this->isReturnTrip($trip)
-                    ? 'return'
-                    : 'starting';
+                $trip->direction = $this->isReturnTrip($trip) ? 'return' : 'starting';
 
                 if ($this->isReturnTrip($trip)) {
                     $trip->origin = $trip->route_destination;
@@ -200,13 +172,8 @@ class PassengerBookingController extends Controller
                 $trip->booked_seats_count = $availability['booked_seats_count'];
                 $trip->booked_seats = $availability['booked_seats_count'];
                 $trip->available_seats = $availability['available_seats'];
-
-                $trip->booking_closes_at =
-                    $this->bookingCloseTime($trip)->toDateTimeString();
-
-                $trip->booking_available =
-                    $timeBookable &&
-                    $availability['available_seats'] > 0;
+                $trip->booking_closes_at = $this->bookingCloseTime($trip)->toDateTimeString();
+                $trip->booking_available = $timeBookable && $availability['available_seats'] > 0;
 
                 if (!$timeBookable) {
                     $trip->booking_status = 'closed';
@@ -216,15 +183,56 @@ class PassengerBookingController extends Controller
                     $trip->booking_status = 'available';
                 }
 
+                $trip->is_bookable = true;
+                $trip->is_timetable_only = false;
+                $trip->service_type = 'online_booking';
+                $trip->label = 'ONLINE BOOKING';
+
                 return $trip;
             })
             ->filter()
-            ->sortBy(
-                fn ($trip) =>
-                    $trip->boarding_time ??
-                    $trip->departure_time ??
-                    '23:59:59'
+            ->sortBy(fn ($trip) => $trip->boarding_time ?? $trip->departure_time ?? '23:59:59')
+            ->values();
+
+        $fixedServicesQuery = DB::table('fixed_services as fs')
+            ->join('routes as r', 'r.id', '=', 'fs.route_id')
+            ->whereIn('fs.route_id', $matchingRouteIds->all());
+
+        if (Schema::hasColumn('fixed_services', 'is_active')) {
+            $fixedServicesQuery->where('fs.is_active', true);
+        }
+        if (Schema::hasColumn('fixed_services', 'is_published')) {
+            $fixedServicesQuery->where('fs.is_published', true);
+        }
+
+        $fixedServices = $fixedServicesQuery
+            ->select(
+                'fs.*',
+                'r.route_number',
+                'r.name as route_name',
+                'r.origin as route_origin',
+                'r.destination as route_destination',
+                'r.distance_km',
+                'r.duration_minutes'
             )
+            ->get();
+
+        $timetableServices = $fixedServices
+            ->map(function ($service) use ($origin, $destination, $date) {
+                $startingMatch = $this->fixedTimetableMatch($service, $origin, $destination, 'starting');
+                if ($startingMatch !== null) {
+                    return $this->formatFixedTimetableService($service, $startingMatch, $date);
+                }
+
+                $returnMatch = $this->fixedTimetableMatch($service, $origin, $destination, 'return');
+                if ($returnMatch !== null) {
+                    return $this->formatFixedTimetableService($service, $returnMatch, $date);
+                }
+
+                return null;
+            })
+            ->filter()
+            ->sortBy(fn ($service) => $service['departure_time'] ?? '23:59:59')
             ->values();
 
         return response()->json([
@@ -233,7 +241,11 @@ class PassengerBookingController extends Controller
             'destination' => $destination,
             'date' => $date,
             'minimum_journey_km' => self::MIN_JOURNEY_KM,
-            'trips' => $matches,
+            'trips' => $bookableTrips,
+            'fixed_services' => $timetableServices,
+            'bookable_count' => $bookableTrips->count(),
+            'timetable_count' => $timetableServices->count(),
+            'total_services' => $bookableTrips->count() + $timetableServices->count(),
         ]);
     }
 
@@ -3272,6 +3284,147 @@ class PassengerBookingController extends Controller
 
         return 'S' .
             (int) $number;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Fixed Timetable Match
+    |--------------------------------------------------------------------------
+    */
+
+    private function fixedTimetableMatch(
+        $service,
+        string $origin,
+        string $destination,
+        string $direction
+    ): ?array {
+        $stops = DB::table('fixed_service_stops as fss')
+            ->join('route_stops as rs', 'rs.id', '=', 'fss.route_stop_id')
+            ->where('fss.fixed_service_id', $service->id)
+            ->where('fss.direction', $direction)
+            ->orderBy('fss.stop_order')
+            ->select(
+                'fss.id',
+                'fss.route_stop_id',
+                'fss.stop_order',
+                'fss.arrival_time',
+                'fss.departure_time',
+                'fss.boarding_allowed',
+                'fss.dropoff_allowed',
+                'rs.name',
+                'rs.distance_from_origin_km'
+            )
+            ->get();
+
+        if ($stops->isEmpty()) {
+            return null;
+        }
+
+        foreach ($stops as $index => $stop) {
+            $stop->_journey_order = $index + 1;
+            $stop->schedule_time = $stop->departure_time ?? $stop->arrival_time;
+        }
+
+        $boarding = $stops->first(fn ($stop) => $this->sameStopName($stop->name, $origin));
+        $dropoff = $stops->first(fn ($stop) => $this->sameStopName($stop->name, $destination));
+
+        if (!$boarding || !$dropoff) {
+            return null;
+        }
+
+        if ((int) $boarding->_journey_order >= (int) $dropoff->_journey_order) {
+            return null;
+        }
+
+        $departureTime = $boarding->departure_time ?? $boarding->arrival_time;
+        $arrivalTime = $dropoff->arrival_time ?? $dropoff->departure_time;
+
+        if (empty($departureTime)) {
+            $departureTime = $direction === 'return'
+                ? ($service->return_time ?? null)
+                : ($service->starting_time ?? null);
+        }
+
+        return [
+            'direction' => $direction,
+            'boarding_stop' => $boarding->name,
+            'dropoff_stop' => $dropoff->name,
+            'departure_time' => $departureTime,
+            'arrival_time' => $arrivalTime,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Format Fixed Timetable Service
+    |--------------------------------------------------------------------------
+    */
+
+    private function formatFixedTimetableService(
+        $service,
+        array $match,
+        string $date
+    ): array {
+        $contacts = [];
+
+        foreach ([
+            'contact_number',
+            'contact_number_1',
+            'contact_number_2',
+            'contact_number_3',
+            'contact_1',
+            'contact_2',
+            'contact_3',
+            'phone',
+            'phone_1',
+            'phone_2',
+            'phone_3',
+        ] as $column) {
+            if (property_exists($service, $column) && !empty($service->{$column})) {
+                $contacts[] = $service->{$column};
+            }
+        }
+
+        $contacts = array_values(array_unique($contacts));
+
+        return [
+            'id' => (int) $service->id,
+            'fixed_service_id' => (int) $service->id,
+            'service_name' => !empty($service->service_name)
+                ? $service->service_name
+                : 'Fixed Bus Service',
+            'bus_name' => !empty($service->bus_name)
+                ? $service->bus_name
+                : (!empty($service->service_name) ? $service->service_name : 'Fixed Bus Service'),
+            'bus_number' => $service->bus_number ?? null,
+            'route_id' => (int) $service->route_id,
+            'route_number' => $service->route_number ?? null,
+            'route_name' => $service->route_name ?? null,
+            'route_origin' => $service->route_origin ?? null,
+            'route_destination' => $service->route_destination ?? null,
+            'origin' => $match['boarding_stop'],
+            'destination' => $match['dropoff_stop'],
+            'requested_origin' => $match['boarding_stop'],
+            'requested_destination' => $match['dropoff_stop'],
+            'boarding_stop' => $match['boarding_stop'],
+            'dropoff_stop' => $match['dropoff_stop'],
+            'direction' => $match['direction'],
+            'service_date' => $date,
+            'departure_time' => $match['departure_time'],
+            'arrival_time' => $match['arrival_time'],
+            'starting_time' => $service->starting_time ?? null,
+            'return_time' => $service->return_time ?? null,
+            'distance_km' => $service->distance_km ?? null,
+            'duration_minutes' => $service->duration_minutes ?? null,
+            'contacts' => $contacts,
+            'is_bookable' => false,
+            'booking_available' => false,
+            'is_timetable_only' => true,
+            'service_type' => 'timetable_only',
+            'booking_status' => 'not_available',
+            'label' => 'TIMETABLE ONLY',
+            'message' => 'This bus is listed for timetable information only. Online seat booking is not available.',
+        ];
     }
 
     /*
