@@ -257,13 +257,10 @@ class PassengerBookingController extends Controller
 
         $fixedServicesQuery = DB::table('fixed_services as fs')
             ->join('routes as r', 'r.id', '=', 'fs.route_id')
-            ->whereIn('fs.route_id', $matchingRouteIds->all())
             ->whereNull('fs.operator_id')
-            ->whereNull('fs.bus_id')
-            ->whereNotNull('fs.bus_name')
-            ->whereRaw("TRIM(fs.bus_name) <> ''");
+            ->whereNull('fs.bus_id');
 
-        if (Schema::hasColumn('fixed_services', 'is_active')) {
+            if (Schema::hasColumn('fixed_services', 'is_active')) {
             $fixedServicesQuery->where('fs.is_active', true);
         }
 
