@@ -242,25 +242,38 @@ class PassengerBookingController extends Controller
             )
             ->values();
 
-       $fixedServicesQuery = DB::table('fixed_services as fs')
-    ->join('routes as r', 'r.id', '=', 'fs.route_id')
-    ->whereIn('fs.route_id', $matchingRouteIds->all())
-    ->whereNull('fs.operator_id')
-    ->whereNull('fs.bus_id')
-    ->whereNotNull('fs.bus_name')
-    ->whereRaw("TRIM(fs.bus_name) <> ''");
+        /*
+        |--------------------------------------------------------------------------
+        | Admin Fixed Timetables Only
+        |--------------------------------------------------------------------------
+        |
+        | fixed_services is shared by operator route services and
+        | admin-created information-only timetables.
+        |
+        | Only rows with operator_id = NULL and bus_id = NULL are allowed
+        | to appear as TIMETABLE ONLY passenger search results.
+        |
+        */
 
-    if (Schema::hasColumn('fixed_services', 'is_active')) {
-        $fixedServicesQuery->where('fs.is_active', true);
-    }
+        $fixedServicesQuery = DB::table('fixed_services as fs')
+            ->join('routes as r', 'r.id', '=', 'fs.route_id')
+            ->whereIn('fs.route_id', $matchingRouteIds->all())
+            ->whereNull('fs.operator_id')
+            ->whereNull('fs.bus_id')
+            ->whereNotNull('fs.bus_name')
+            ->whereRaw("TRIM(fs.bus_name) <> ''");
 
-    if (Schema::hasColumn('fixed_services', 'is_published')) {
-        $fixedServicesQuery->where('fs.is_published', true);
-    }
+        if (Schema::hasColumn('fixed_services', 'is_active')) {
+            $fixedServicesQuery->where('fs.is_active', true);
+        }
 
-    if (Schema::hasColumn('routes', 'is_active')) {
-        $fixedServicesQuery->where('r.is_active', true);
-    }
+        if (Schema::hasColumn('fixed_services', 'is_published')) {
+            $fixedServicesQuery->where('fs.is_published', true);
+        }
+
+        if (Schema::hasColumn('routes', 'is_active')) {
+            $fixedServicesQuery->where('r.is_active', true);
+        }
 
         $fixedServices = $fixedServicesQuery
             ->select(
@@ -276,6 +289,13 @@ class PassengerBookingController extends Controller
 
         $timetableServices = $fixedServices
             ->map(function ($service) use ($origin, $destination, $date) {
+                if (
+                    $service->operator_id !== null ||
+                    $service->bus_id !== null
+                ) {
+                    return null;
+                }
+
                 foreach (['starting', 'return'] as $direction) {
                     $match = $this->fixedTimetableMatch(
                         $service,
@@ -327,7 +347,6 @@ class PassengerBookingController extends Controller
                 $timetableServices->count(),
         ]);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -3581,6 +3600,15 @@ class PassengerBookingController extends Controller
         array $match,
         string $date
     ): array {
+        if (
+            $service->operator_id !== null ||
+            $service->bus_id !== null
+        ) {
+            throw new \LogicException(
+                'Operator route service cannot be formatted as a timetable-only service.'
+            );
+        }
+
         $contacts = [];
 
         foreach ([
