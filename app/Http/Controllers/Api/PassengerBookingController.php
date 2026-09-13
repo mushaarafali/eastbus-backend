@@ -3532,14 +3532,7 @@ class PassengerBookingController extends Controller
                 return null;
             }
         }
-
-        if (
-            !$boarding->boarding_allowed ||
-            !$dropoff->dropoff_allowed
-        ) {
-            return null;
-        }
-
+        
         $departureTime =
             $boarding->departure_time ??
             $boarding->arrival_time;

@@ -239,10 +239,6 @@ class FixedScheduleController extends Controller
             return null;
         }
 
-        if (!$boarding['boarding_allowed'] || !$dropoff['dropoff_allowed']) {
-            return null;
-        }
-
         $boardingTime =
             $boarding['departure_time'] ?: $boarding['arrival_time'];
 
