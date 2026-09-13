@@ -422,16 +422,17 @@ document.addEventListener('DOMContentLoaded', function () {
             }).setView([latitude, longitude], 15.5);
 
             L.tileLayer(
-                'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+                'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 {
-                    subdomains: 'abcd',
-                    maxZoom: 20,
-                    detectRetina: true,
+                    minZoom: 4,
+                    maxZoom: 19,
+                    tileSize: 256,
+                    zoomOffset: 0,
                     updateWhenIdle: false,
-                    keepBuffer: 4,
-                    crossOrigin: true,
+                    updateWhenZooming: false,
+                    keepBuffer: 6,
                     attribution:
-                        '&copy; OpenStreetMap contributors &copy; CARTO'
+                        '&copy; OpenStreetMap contributors'
                 }
             ).addTo(map);
         }
@@ -459,8 +460,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         setTimeout(() => {
-            map.invalidateSize();
-        }, 100);
+            map.invalidateSize(true);
+        }, 150);
+
+        setTimeout(() => {
+            map.invalidateSize(true);
+        }, 500);
     }
 
     function showWaiting(text) {
@@ -475,9 +480,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
         setTimeout(() => {
             if (map) {
-                map.invalidateSize();
+                map.invalidateSize(true);
             }
-        }, 100);
+        }, 150);
+
+        setTimeout(() => {
+            if (map) {
+                map.invalidateSize(true);
+            }
+        }, 500);
     }
 
     function clearCurrentTracking() {
