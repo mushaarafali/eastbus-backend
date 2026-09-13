@@ -254,15 +254,6 @@ class PassengerBookingController extends Controller
             $fixedServicesQuery->where('fs.is_published', true);
         }
 
-        if (
-            Schema::hasColumn('fixed_services', 'operator_id') &&
-            Schema::hasColumn('fixed_services', 'bus_id')
-        ) {
-            $fixedServicesQuery
-                ->whereNull('fs.operator_id')
-                ->whereNull('fs.bus_id');
-        }
-
         if (Schema::hasColumn('routes', 'is_active')) {
             $fixedServicesQuery->where('r.is_active', true);
         }
