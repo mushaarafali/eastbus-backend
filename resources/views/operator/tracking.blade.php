@@ -415,14 +415,23 @@ document.addEventListener('DOMContentLoaded', function () {
     function ensureMap(latitude, longitude, heading) {
         if (!map) {
             map = L.map('operator-live-map', {
-                zoomControl: true
+                zoomControl: true,
+                preferCanvas: true,
+                fadeAnimation: true,
+                markerZoomAnimation: true
             }).setView([latitude, longitude], 15.5);
 
             L.tileLayer(
-                'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
                 {
-                    maxZoom: 19,
-                    attribution: '&copy; OpenStreetMap contributors'
+                    subdomains: 'abcd',
+                    maxZoom: 20,
+                    detectRetina: true,
+                    updateWhenIdle: false,
+                    keepBuffer: 4,
+                    crossOrigin: true,
+                    attribution:
+                        '&copy; OpenStreetMap contributors &copy; CARTO'
                 }
             ).addTo(map);
         }
