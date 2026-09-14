@@ -416,34 +416,34 @@ class PassengerRecommendationController extends Controller
 
     private function isTripBookable($trip): bool
     {
+        if (empty($trip->service_date) || empty($trip->departure_time)) {
+            return false;
+        }
+
+        $departure = Carbon::parse(
+            Carbon::parse($trip->service_date)->toDateString() .
+            ' ' .
+            $trip->departure_time
+        );
+
+        if ($departure->lte(now())) {
+            return false;
+        }
+
+        /*
+         * Operator-created Bus Route Services are also stored in fixed_services.
+         * For passenger recommendations, the trip's own status and is_published
+         * values are authoritative.
+         *
+         * Do not reject a valid published trip only because the linked
+         * fixed_services.is_published value is false.
+         */
         if (
-            empty($trip->service_date) ||
-            empty($trip->departure_time)
+            $trip->fixed_service_id !== null &&
+            $trip->service_is_active !== null &&
+            !(bool) $trip->service_is_active
         ) {
             return false;
-        }
-
-        $serviceDate = Carbon::parse($trip->service_date)
-            ->startOfDay();
-
-        if ($serviceDate->lt(today())) {
-            return false;
-        }
-
-        if ($trip->fixed_service_id !== null) {
-            if (
-                $trip->service_is_active !== null &&
-                !(bool) $trip->service_is_active
-            ) {
-                return false;
-            }
-
-            if (
-                $trip->service_is_published !== null &&
-                !(bool) $trip->service_is_published
-            ) {
-                return false;
-            }
         }
 
         return now()->lt($this->bookingCloseTime($trip));
@@ -467,10 +467,14 @@ class PassengerRecommendationController extends Controller
         $seatCount = 0;
 
         if (Schema::hasTable('seats')) {
-            $seatCount = DB::table('seats')
-                ->where('bus_id', $busId)
-                ->where('is_disabled', false)
-                ->count();
+            $seatQuery = DB::table('seats')
+                ->where('bus_id', $busId);
+
+            if (Schema::hasColumn('seats', 'is_disabled')) {
+                $seatQuery->where('is_disabled', false);
+            }
+
+            $seatCount = $seatQuery->count();
         }
 
         if ($seatCount <= 0) {
